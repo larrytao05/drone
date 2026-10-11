@@ -2,7 +2,7 @@ This project builds an LLM-powered controller for a DJI drone.
 
 # System design
 
-Status: proposed design with a TypeScript planner contract scaffold, 10 October 2026. The planner is a placeholder and does not calculate or validate plans. The separate KMZ round-trip experiment remains unchanged.
+Status: proposed application design with a deterministic waypoint planner implemented in `src/core.ts`, 10 October 2026. The planner validates route and orbit requests and returns waypoint values or structured input issues. The editor, interpretation endpoint and flight-file export remain proposed. The separate KMZ round-trip experiment remains unchanged.
 
 ## Product and first scope
 
@@ -82,7 +82,13 @@ A report that passes geometry checks means the plan meets the supplied mathemati
 
 ## Architecture
 
-The planner contract is defined in [`src/index.ts`](src/index.ts). It outputs only waypoint values; the wider mission module owns actions, settings, review and export later.
+The public `planMission(input: unknown)` operation is exported from [`src/index.ts`](src/index.ts). It accepts route or orbit geometry, a shared height datum and fixed or target-facing framing. It returns waypoint values or structured input issues.
+
+Routes preserve 2 to 100 supplied coordinates in order, including repeated points, without adding intermediate points. Orbits use WGS84 geodesics at a constant radius. The radius must be positive and at most 10000m. Sampling keeps planar chord deviation at or below 1m, uses no angular step above 90 degrees, and returns at most 200 waypoints. A closed orbit ends with a coordinate exactly equal to its first coordinate. The planner rejects a request that exceeds its radius or sample limit.
+
+Fixed headings and orbit start bearings use `[0, 360)`. Fixed gimbal pitch uses `[-90, 90]`. These are mathematical angle bounds, not verified DJI hardware limits. Coordinates use inclusive latitude `[-90, 90]` and longitude `[-180, 180]` bounds. Heights may be any finite value relative to the caller's takeoff datum. The planner rejects extra fields and does not coerce numeric strings.
+
+Target-facing framing uses WGS84 inverse azimuth and a local model based on surface distance and height difference. It rejects target separation of 1 micrometre or less and target range more than 10000 metres, allowing 1 micrometre for geodesic roundoff. It also rejects waypoint positions at an exact geographic pole. Any waypoint orientation failure rejects the whole plan. This geometry does not assess terrain, obstacles, aircraft limits, controller interpolation or flight safety. The wider mission module owns actions, settings, review and export later.
 
 Keep mission state and planning in the browser. Use a small Vercel function for language interpretation.
 
@@ -271,7 +277,7 @@ Direct LLM-generated waypoint files would combine language interpretation, route
 | Step | Deliverable | Completion criterion |
 | --- | --- | --- |
 | 1. Check the integration | Authentic RC Pro 2 mission fixture and version tuple | Establish whether manual transfer and round-trip inspection are possible; record compatibility as verified or blocked |
-| 2. Build the local planner | Waypoint inputs, orbit and route positions, headings and gimbal pitch | Deterministic waypoint results and input diagnostics |
+| 2. Build the local planner | Route and orbit positions, headings, gimbal pitch and input diagnostics | Implemented as a deterministic waypoint-only module; no aircraft execution or export claims |
 | 3. Add the editor | Map, forms, preview, local saving and review | Both mission workflows work; edits invalidate review; backups restore as drafts |
 | 4. Add interpretation | Protected Vercel endpoint with structured proposals | Missing data produces questions; stale replies cannot mutate plans; quotas and unauthorised access checks pass |
 | 5. Add flight-file export | Profile-specific adapter and manual handoff instructions | Reopened route/settings and supervised behaviour match the reviewed plan |
@@ -290,4 +296,4 @@ Local planning and JSON work can proceed while flight-file compatibility remains
 | Model provider, model, map account and usage budget | Inference and deployment |
 | Operator's numeric flight limits and selected lens | Each complete mission |
 
-Implementation reconciliation: no application code exists yet. This README is the proposed contract. Update it when an accepted implementation decision changes inputs, outputs or ownership.
+Implementation reconciliation: stage 1 implements local waypoint planning only. It does not add the editor, interpretation service, persistence, camera actions, mission review or flight-file export. The separate KMZ evidence above remains limited to the recorded unchanged mission and version tuple.

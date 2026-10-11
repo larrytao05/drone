@@ -27,5 +27,9 @@
   },
   "engines": {
     "node": "^22.13.0 || ^24.0.0 || >=26.0.0"
+  },
+  "dependencies": {
+    "geographiclib-geodesic": "2.2.0",
+    "zod": "4.6.5"
   }
 }
