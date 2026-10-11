@@ -251,6 +251,18 @@ function calculate(input: ParsedMissionInput): PlanResult {
   return { kind: "calculated", waypoints };
 }
 
+/**
+ * Plans a deterministic orbit or ordered route without mutating the input.
+ * Coordinates are WGS84 latitude and longitude in degrees. Waypoint and target
+ * heights are metres relative to the same caller-planned takeoff elevation.
+ *
+ * @param input Plain objects and arrays with stored properties, including
+ * nested fields. Accessors, proxies and class instances are unsupported.
+ * @returns A `calculated` result with ordered waypoints containing `coordinate`,
+ * `heightAboveTakeoffM`, `headingDeg` and `gimbalPitchDeg`, or an `invalid-input`
+ * result with structured issues.
+ * @throws Property-access errors from unsupported objects.
+ */
 export function planMission(input: unknown): PlanResult {
   const parsed = missionInputSchema.safeParse(input, { reportInput: true });
   if (!parsed.success) return invalid(parseIssues(parsed.error));

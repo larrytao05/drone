@@ -84,6 +84,8 @@ A report that passes geometry checks means the plan meets the supplied mathemati
 
 The public `planMission(input: unknown)` operation is exported from [`src/index.ts`](src/index.ts). It accepts route or orbit geometry, a shared height datum and fixed or target-facing framing. It returns waypoint values or structured input issues.
 
+Pass ordinary data objects and arrays, such as parsed JSON or values built from forms. Use stored properties throughout nested input. Getters, setters, proxies and class instances are outside the supported input contract. Invalid ordinary data returns `invalid-input` issues. Errors raised while reading properties of unsupported objects can propagate to the caller.
+
 Routes preserve 2 to 100 supplied coordinates in order, including repeated points, without adding intermediate points. Orbits use WGS84 geodesics at a constant radius. The radius must be positive and at most 10000m. Sampling keeps planar chord deviation at or below 1m, uses no angular step above 90 degrees, and returns at most 200 waypoints. A closed orbit ends with a coordinate exactly equal to its first coordinate. The planner rejects a request that exceeds its radius or sample limit.
 
 Fixed headings and orbit start bearings use `[0, 360)`. Fixed gimbal pitch uses `[-90, 90]`. These are mathematical angle bounds, not verified DJI hardware limits. Coordinates use inclusive latitude `[-90, 90]` and longitude `[-180, 180]` bounds. Heights may be any finite value relative to the caller's takeoff datum. The planner rejects extra fields and does not coerce numeric strings.
