@@ -6,3 +6,6 @@ dist/
 /ROADMAP.md
 /compatibility/
 *.kmz
+/.next/
+/next-env.d.ts
+*.tsbuildinfo

@@ -16,7 +16,11 @@
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "vitest run",
-    "lint": "eslint ."
+    "lint": "eslint .",
+    "dev:web": "npm run build && next dev",
+    "build:web": "npm run build && next build",
+    "start:web": "next start",
+    "typecheck:web": "npm run build && next typegen && tsc --noEmit -p tsconfig.web.json"
   },
   "devDependencies": {
     "@types/node": "24.19.2",
