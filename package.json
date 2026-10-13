@@ -7,6 +7,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./agent": {
+      "types": "./dist/agent.d.ts",
+      "import": "./dist/agent.js"
     }
   },
   "files": [
@@ -35,6 +39,7 @@
     "node": "^22.13.0 || ^24.0.0 || >=26.0.0"
   },
   "dependencies": {
+    "ai": "7.0.138",
     "geographiclib-geodesic": "2.2.0",
     "next": "16.4.0",
     "react": "19.3.0",

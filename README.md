@@ -1,8 +1,10 @@
 This project builds an LLM-powered controller for a DJI drone.
 
+Stage 3 design proposal: [chat agent and LLM integration](docs/stage-3-llm-integration.html). A Node-only agent runtime is implemented in the `@drone/mission-planner/agent` package subpath. The runtime can answer, request clarification or return a validated proposal for review. The chat UI, HTTP route, provider configuration, persistence and mission acceptance flow remain proposed application work.
+
 # System design
 
-Status: proposed application design with a deterministic waypoint planner implemented in `src/core.ts`, 10 October 2026. The planner validates route and orbit requests and returns waypoint values or structured input issues. The editor, interpretation endpoint and flight-file export remain proposed. The separate KMZ round-trip experiment remains unchanged.
+Status: Node agent runtime implemented, application integration proposed, 13 October 2026. The deterministic waypoint planner in `src/core.ts` validates route and orbit requests and returns waypoint values or structured input issues. The editor, interpretation endpoint, provider connection, durable quotas, mission acceptance flow and flight-file export remain proposed. The separate KMZ round-trip experiment remains unchanged.
 
 ## Product and first scope
 
@@ -79,6 +81,14 @@ Use JavaScript Object Notation (JSON) for portable planning files. KMZ denotes t
 Show nominal route length and duration, including known dwell time. The duration estimate excludes unverified approach, return, acceleration and environmental delays. It does not establish battery sufficiency.
 
 A report that passes geometry checks means the plan meets the supplied mathematical constraints. The operator still checks the site, clearance, weather, battery, flight permissions and DJI Fly settings.
+
+## Agent runtime contract
+
+Import `runAgentTurn` from `@drone/mission-planner/agent`. The caller supplies an AI SDK `LanguageModel`, an immutable snapshot and its binding, a change schema, a redacted context description function and a preview function. The module does not configure a provider or read or mutate a live mission. The caller must keep coordinates and other private data out of context descriptions, preview summaries and diagnostics. The runtime does not send the raw snapshot or candidate to the model.
+
+The runtime exposes four fixed tools: `get_mission_context`, `preview_change`, `propose_change` and `ask_clarification`. It allows at most 4 model calls, 6 tool calls and 30 seconds per turn by default. It disables SDK retries and bounds history to 12 user or assistant messages, each at 4,000 characters, with a 24KB cap on the combined turn metadata and text. Model output is capped at 1,000 tokens; returned answer text is capped at 4,000 characters, and each structured model-facing result is capped at 8KB. Limits can be lowered for tests but cannot exceed those caps.
+
+A turn returns `answered` with text, `needs-input` with a question, `proposed` with the unchanged binding, exact validated change and opaque candidate, or a `failed`, `cancelled`, `deadline` or `budget-exceeded` outcome. Every outcome includes tool activity. Cancellation and deadlines suppress late results, even when an operation ignores its abort signal. Such an operation may remain pending after the turn returns. A proposal is staged for a caller to review; this runtime does not accept it or update mission state.
 
 ## Architecture
 
