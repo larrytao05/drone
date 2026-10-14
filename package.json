@@ -19,7 +19,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test": "vitest run",
+    "test": "npm run build && vitest run",
     "lint": "eslint .",
     "dev:web": "npm run build && next dev",
     "build:web": "npm run build && next build",
@@ -39,6 +39,7 @@
     "node": "^22.13.0 || ^24.0.0 || >=26.0.0"
   },
   "dependencies": {
+    "@ai-sdk/openai": "4.0.93",
     "ai": "7.0.138",
     "geographiclib-geodesic": "2.2.0",
     "next": "16.4.0",

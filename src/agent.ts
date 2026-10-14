@@ -5,17 +5,17 @@ import { z } from "zod";
 
 type ModelData = z.infer<ReturnType<typeof z.json>>;
 
-const bindingSchema = z.strictObject({
+export const agentBindingSchema = z.strictObject({
   missionBranchId: z.string().min(1).max(128), revision: z.number().int().nonnegative(),
   inputDigest: z.string().min(1).max(128), schemaVersion: z.string().min(1).max(64),
   plannerVersion: z.string().min(1).max(64),
 });
-export type AgentBinding = z.infer<typeof bindingSchema>;
+export type AgentBinding = z.infer<typeof agentBindingSchema>;
 const textSchema = z.string().trim().min(1).max(4_000);
 const inputSchema = z.strictObject({
   message: textSchema,
   history: z.array(z.strictObject({ role: z.enum(["user", "assistant"]), content: textSchema })).max(12).default([]),
-  binding: bindingSchema,
+  binding: agentBindingSchema,
 });
 const limitsSchema = z.strictObject({
   modelCalls: z.number().int().min(1).max(4).default(4),

@@ -9,3 +9,6 @@ dist/
 /.next/
 /next-env.d.ts
 *.tsbuildinfo
+
+.env.local
+.env.*.local

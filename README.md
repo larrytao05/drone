@@ -1,10 +1,46 @@
 This project builds an LLM-powered controller for a DJI drone.
 
-Stage 3 design proposal: [chat agent and LLM integration](docs/stage-3-llm-integration.html). A Node-only agent runtime is implemented in the `@drone/mission-planner/agent` package subpath. The runtime can answer, request clarification or return a validated proposal for review. The chat UI, HTTP route, provider configuration, persistence and mission acceptance flow remain proposed application work.
+Stage 3 design proposal: [chat agent and LLM integration](docs/stage-3-llm-integration.html). A Node-only agent runtime is implemented in the `@drone/mission-planner/agent` package subpath. The runtime can answer, request clarification or return a validated proposal for review. A private Node HTTP route and configurable OpenAI connection are now implemented. The chat UI, persistence, durable quotas and mission acceptance flow remain proposed application work.
 
 # System design
 
-Status: Node agent runtime implemented, application integration proposed, 13 October 2026. The deterministic waypoint planner in `src/core.ts` validates route and orbit requests and returns waypoint values or structured input issues. The editor, interpretation endpoint, provider connection, durable quotas, mission acceptance flow and flight-file export remain proposed. The separate KMZ round-trip experiment remains unchanged.
+Status: Node agent runtime and private interpretation endpoint implemented, editor integration proposed, 13 October 2026. The deterministic waypoint planner in `src/core.ts` validates route and orbit requests and returns waypoint values or structured input issues. The editor, durable quotas, mission acceptance flow and flight-file export remain proposed. The separate KMZ round-trip experiment remains unchanged.
+
+## Private chat endpoint
+
+The Node route at `POST /api/chat` accepts complete planner inputs from a private client. Copy `.env.example` to `.env.local` and set `AGENT_API_TOKEN`, `OPENAI_API_KEY` and an explicit `OPENAI_MODEL`. Run `npm run dev:web` for local API development. The token and key stay on the server. Never place them in browser code or `NEXT_PUBLIC_` variables. The route returns 503 until the required configuration is present, and requires `Authorization: Bearer <AGENT_API_TOKEN>` before reading a request or constructing a model.
+
+The request body has this shape. The sample coordinates and identifiers are illustrative.
+
+```json
+{
+  "message": "Set the orbit radius to 45 metres",
+  "history": [],
+  "snapshot": {
+    "shot": {
+      "kind": "orbit",
+      "centre": { "latitudeDeg": 41.1234567, "longitudeDeg": -72.1234567 },
+      "radiusM": 30,
+      "startBearingDeg": 0,
+      "direction": "clockwise",
+      "arc": { "kind": "closed" }
+    },
+    "heightAboveTakeoffM": 40,
+    "framing": { "kind": "fixed", "headingDeg": 0, "gimbalPitchDeg": -20 }
+  },
+  "binding": {
+    "missionBranchId": "branch-1",
+    "revision": 2,
+    "inputDigest": "example-digest",
+    "schemaVersion": "1",
+    "plannerVersion": "1"
+  }
+}
+```
+
+The route accepts only height and orbit-radius changes. It validates every candidate with `planMission` and returns the existing agent outcome, including calculated waypoints for a proposal. It never applies a proposal or controls a drone. The binding is caller-supplied correlation data; this endpoint cannot verify the current editor revision. A future browser client must compare the full binding against its pending snapshot and current revision before showing or applying a result.
+
+Requests must use JSON and fit within 64 KiB. Message, history and binding data must fit within 24,000 bytes. Each turn has at most 4 model calls, 6 tool calls and 30 seconds, with no automatic SDK retries. The provider uses the [OpenAI Responses API](https://ai-sdk.dev/providers/ai-sdk-providers/openai) with `store: false`. The provider prompt and tool results omit snapshot coordinates, while user-written text can still contain locations and is sent to the provider. Browser authentication, durable quotas, streaming chat and editor acceptance are still required before deployment. This bearer token is for private CLI and integration clients only.
 
 ## Product and first scope
 
