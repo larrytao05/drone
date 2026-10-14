@@ -1,10 +1,10 @@
 import { MockLanguageModelV3 } from "ai/test";
 import { generateText } from "ai";
 import { describe, expect, it, vi } from "vitest";
-import { createChatHandler } from "../../web/server/chat-handler.js";
-import { getConfiguredModel } from "../../web/server/model.js";
-import { previewMissionChange } from "../../web/server/mission-agent.js";
-import type { MissionInput } from "../../src/index.js";
+import { createChatHandler } from "../web/server/chat-handler.js";
+import { getConfiguredModel } from "../web/server/model.js";
+import { previewMissionChange } from "../web/server/mission-agent.js";
+import type { MissionInput } from "../src/index.js";
 
 type ModelResponse = Awaited<ReturnType<MockLanguageModelV3["doGenerate"]>>;
 const call = (toolName: string, args: unknown = {}, toolCallId = "call-1") => ({ type: "tool-call", toolName, toolCallId, input: JSON.stringify(args) } satisfies ModelResponse["content"][number]);

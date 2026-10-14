@@ -14,5 +14,10 @@
     "noEmit": true,
     "allowImportingTsExtensions": true
   },
-  "include": ["src/**/*.ts", "tests/**/*.ts"]
+  "include": [
+    "src/**/*.ts",
+    "tests/planner.test.ts",
+    "tests/agent.test.ts",
+    "tests/chat.test.ts"
+  ]
 }
