@@ -38,7 +38,11 @@
     "predev:web": "npm run prepare:map-worker",
     "prebuild:web": "npm run prepare:map-worker",
     "test:e2e:map-local:prod": "EDITOR_SERVER_MODE=production playwright test --config playwright.editor-foundation.config.ts tests/e2e/local-map.spec.ts",
-    "test:e2e:points": "playwright test --config playwright.editor-foundation.config.ts tests/e2e/add-points.spec.ts tests/e2e/selection.spec.ts tests/e2e/coordinate-editing.spec.ts tests/e2e/map-dragging.spec.ts"
+    "test:e2e:points": "playwright test --config playwright.editor-foundation.config.ts tests/e2e/add-points.spec.ts tests/e2e/selection.spec.ts tests/e2e/coordinate-editing.spec.ts tests/e2e/map-dragging.spec.ts",
+    "test:e2e:editor-local": "playwright test --config playwright.editor-foundation.config.ts",
+    "test:e2e:editor-local:prod": "EDITOR_SERVER_MODE=production playwright test --config playwright.editor-foundation.config.ts",
+    "test:e2e:map-fallback": "playwright test --config playwright.editor-fallback.config.ts",
+    "test:e2e:map-fallback:prod": "EDITOR_SERVER_MODE=production playwright test --config playwright.editor-fallback.config.ts"
   },
   "devDependencies": {
     "@playwright/test": "1.64.0",
