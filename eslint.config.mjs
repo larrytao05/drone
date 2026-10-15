@@ -3,7 +3,7 @@ import tseslint from "typescript-eslint";
 export default tseslint.config(
   ...tseslint.configs.recommended,
   {
-    files: ["**/*.ts"],
+    files: ["**/*.{ts,tsx,js,jsx}"],
     rules: {
       "@typescript-eslint/no-unused-vars": [
         "error",
@@ -16,7 +16,7 @@ export default tseslint.config(
       "no-restricted-imports": [
         "error",
         {
-          patterns: ["**/core.js", "@drone/mission-planner/*"]
+          patterns: ["**/core.js", "**/core.ts", "**/core", "@drone/mission-planner/*"]
         }
       ]
     }
@@ -27,12 +27,12 @@ export default tseslint.config(
       "no-restricted-imports": [
         "error",
         {
-          patterns: ["@drone/mission-planner/*"]
+          patterns: ["**/core.ts", "**/core", "@drone/mission-planner/*"]
         }
       ]
     }
   },
   {
-    ignores: ["dist/**", "node_modules/**"]
+    ignores: ["dist/**", ".next/**", "next-env.d.ts", "node_modules/**", "playwright-report/**", "test-results/**"]
   }
 );

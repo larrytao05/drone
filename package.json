@@ -16,10 +16,22 @@
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "vitest run",
-    "lint": "eslint ."
+    "test:web": "vitest run --config vitest.web.config.ts",
+    "test:e2e": "playwright test",
+    "test:e2e:foundation": "playwright test --config playwright.foundation.config.ts",
+    "test:e2e:foundation:prod": "npm run build:web && FOUNDATION_SERVER_MODE=production playwright test --config playwright.foundation.config.ts",
+    "typecheck:editor-tests": "tsc --noEmit -p tsconfig.editor-tests.json",
+    "lint": "eslint .",
+    "dev:web": "npm run build && next dev",
+    "build:web": "npm run build && next build",
+    "start:web": "next start",
+    "typecheck:web": "npm run build && next typegen && tsc --noEmit -p tsconfig.web.json"
   },
   "devDependencies": {
+    "@playwright/test": "1.64.0",
     "@types/node": "24.19.2",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
     "eslint": "10.12.0",
     "typescript": "6.0.3",
     "typescript-eslint": "8.71.1",
@@ -30,6 +42,9 @@
   },
   "dependencies": {
     "geographiclib-geodesic": "2.2.0",
+    "next": "16.4.0",
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
     "zod": "4.6.5"
   }
 }

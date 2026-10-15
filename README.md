@@ -4,6 +4,26 @@ This project builds an LLM-powered controller for a DJI drone.
 
 Status: proposed application design with a deterministic waypoint planner implemented in `src/core.ts`, 10 October 2026. The planner validates route and orbit requests and returns waypoint values or structured input issues. The editor, interpretation endpoint and flight-file export remain proposed. The separate KMZ round-trip experiment remains unchanged.
 
+## Browser foundation commands
+
+The current browser page runs temporary fixed-route, face-target and invalid-route checks through the public planner package. No map key or external account is required.
+
+Install dependencies and the Chromium test browser, then start the local page:
+
+```sh
+npm ci
+npx playwright install chromium
+npm run dev:web
+```
+
+The page opens at `http://localhost:3000`. Restart the development command after changing planner source to rebuild its package.
+
+Run `npm run test:e2e:foundation` for the development browser checks. Run `npm run test:e2e:foundation:prod` to build the production application and run the same checks. Each command starts and stops its own server on port 3101 or 3102 and rejects an occupied port. The checks compare every waypoint field, exercise errors and result changes, and calculate while browser network access is disabled. Only Chromium has been verified.
+
+Run `npm run typecheck:web`, `npm run typecheck:editor-tests`, `npm test` and `npm run lint` for compilation, test types, planner tests and lint.
+
+The 14 editor unit suites and 53 editor browser journeys await the full editor implementation. `npm run test:web` selects those unit suites. `npm run test:e2e -- --list` lists the editor journeys without starting a server. The full `test:e2e` command expects editor servers already running at ports 3000 and 3001. The focused foundation commands run 4 separate browser checks.
+
 ## Product and first scope
 
 Build a web app hosted on Vercel that turns a filming or photography request into an editable mission plan for a DJI Mavic 4 Pro with a DJI RC Pro 2. A large language model (LLM) interprets the request. Geometry code calculates waypoints and camera angles. The operator reviews the result and supervises execution in DJI Fly.
