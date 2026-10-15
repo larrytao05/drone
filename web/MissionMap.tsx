@@ -5,6 +5,8 @@ import type { StyleSpecification } from 'maplibre-gl';
 import { parseNumericText } from './numeric-input';
 import type { MapSourceAction, MapSourceView } from './map-source';
 import { createMapSource } from './map-source';
+import type { MapGeometry } from './map-geometry';
+import { createMapPreview } from './map-preview';
 import styles from './MissionMap.module.css';
 
 type MapStatus = 'loading' | 'ready' | 'unavailable';
@@ -35,14 +37,17 @@ function cameraText(camera: Camera): string {
 }
 
 type MissionMapProps = Readonly<{
+  geometry: MapGeometry;
   sourceView: MapSourceView;
   onSourceAction: (action: MapSourceAction) => void;
 }>;
 
-export function MissionMap({ sourceView, onSourceAction }: MissionMapProps) {
+export function MissionMap({ geometry, sourceView, onSourceAction }: MissionMapProps) {
   const container = useRef<HTMLDivElement>(null);
   const mapRef = useRef<import('maplibre-gl').Map | null>(null);
   const sourceAdapterRef = useRef<ReturnType<typeof createMapSource> | null>(null);
+  const previewAdapterRef = useRef<ReturnType<typeof createMapPreview> | null>(null);
+  const geometryRef = useRef(geometry);
   const sourceViewRef = useRef(sourceView);
   const onSourceActionRef = useRef(onSourceAction);
   const [status, setStatus] = useState<MapStatus>('loading');
@@ -53,11 +58,16 @@ export function MissionMap({ sourceView, onSourceAction }: MissionMapProps) {
   const [errors, setErrors] = useState<LocatorErrors>({ latitude: null, longitude: null });
 
   sourceViewRef.current = sourceView;
+  geometryRef.current = geometry;
   onSourceActionRef.current = onSourceAction;
 
   useEffect(() => {
     sourceAdapterRef.current?.sync(sourceView);
   }, [sourceView]);
+
+  useEffect(() => {
+    previewAdapterRef.current?.sync(geometry);
+  }, [geometry]);
 
   useEffect(() => {
     let disposed = false;
@@ -71,6 +81,8 @@ export function MissionMap({ sourceView, onSourceAction }: MissionMapProps) {
       map = null;
       sourceAdapterRef.current?.dispose();
       sourceAdapterRef.current = null;
+      previewAdapterRef.current?.dispose();
+      previewAdapterRef.current = null;
       if (failedMap !== null) {
         if (mapRef.current === failedMap) mapRef.current = null;
         failedMap.remove();
@@ -121,11 +133,44 @@ export function MissionMap({ sourceView, onSourceAction }: MissionMapProps) {
           sourceViewRef.current,
           (action) => onSourceActionRef.current(action),
         );
+        previewAdapterRef.current = createMapPreview({
+          addLineSource: (data) => currentMap.addSource('calculated-route', { type: 'geojson', data }),
+          setLineData: (data) => {
+            const source = currentMap.getSource('calculated-route');
+            if (source === undefined || !('setData' in source) || typeof source.setData !== 'function') {
+              throw new Error('Calculated route source is unavailable');
+            }
+            source.setData(data);
+          },
+          addLineLayer: () => currentMap.addLayer({
+            id: 'calculated-route-line',
+            type: 'line',
+            source: 'calculated-route',
+            layout: { 'line-cap': 'round', 'line-join': 'round' },
+            paint: { 'line-color': '#176b8a', 'line-width': 3, 'line-opacity': 0.85 },
+          }),
+          removeLineLayer: () => {
+            if (currentMap.getLayer('calculated-route-line') !== undefined) currentMap.removeLayer('calculated-route-line');
+          },
+          removeLineSource: () => {
+            if (currentMap.getSource('calculated-route') !== undefined) currentMap.removeSource('calculated-route');
+          },
+          createHeadingMarker: (element, coordinate, rotation) => new Marker({
+            element,
+            anchor: 'center',
+            offset: [0, -30],
+            rotation,
+            rotationAlignment: 'map',
+          })
+            .setLngLat(coordinate)
+            .addTo(currentMap),
+        }, geometryRef.current);
 
         map.on('error', failMap);
         map.on('webglcontextlost', failMap);
         map.on('load', () => {
           if (disposed || failed || map === null) return;
+          previewAdapterRef.current?.loaded();
           setStatus('ready');
           setCamera({
             latitude: map.getCenter().lat,
@@ -157,6 +202,8 @@ export function MissionMap({ sourceView, onSourceAction }: MissionMapProps) {
       disposed = true;
       sourceAdapterRef.current?.dispose();
       sourceAdapterRef.current = null;
+      previewAdapterRef.current?.dispose();
+      previewAdapterRef.current = null;
       if (map !== null) {
         map.remove();
         if (mapRef.current === map) mapRef.current = null;
