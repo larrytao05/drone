@@ -144,6 +144,29 @@
   cursor: grabbing;
 }
 
+:global(.mission-reference-marker) {
+  display: grid;
+  width: 2.25rem;
+  height: 2.25rem;
+  place-items: center;
+  border: 2px solid #fff;
+  color: #fff;
+  box-shadow: 0 1px 5px rgb(23 42 51 / 45%);
+  font: 700 0.75rem/1 system-ui, sans-serif;
+  touch-action: none;
+  cursor: default;
+}
+
+:global(.mission-reference-marker--takeoff) {
+  border-radius: 50%;
+  background: #176b62;
+}
+
+:global(.mission-reference-marker--target) {
+  border-radius: 0.45rem;
+  background: #9a6518;
+}
+
 @media (max-width: 640px) {
   .mapSurface {
     min-height: 18rem;

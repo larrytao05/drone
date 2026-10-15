@@ -1,21 +1,25 @@
 import type { Coordinate } from '@drone/mission-planner';
+import type { MapGeometry } from './map-geometry';
 import type { CoordinateText, EditorAction, EditorState, RoutePoint } from './editor';
 import { normaliseMapCoordinate } from './map-geometry';
 
-type ProjectedPoint = Readonly<{ id: string; coordinate: Coordinate }>;
-
-export type MapPointView = Readonly<{
-  points: readonly ProjectedPoint[];
+export type MapSourceView = Readonly<{
+  points: MapGeometry['points'];
   sourcePointIds: readonly string[];
   selectedPointId: string | null;
   tool: EditorState['tool'];
   revision: number;
+  takeoff: MapGeometry['takeoff'];
+  target: MapGeometry['target'];
 }>;
 
-export type MapPointAction = Extract<EditorAction, { type: 'append-point' | 'select-point' | 'move-point' }>;
+export type MapSourceAction = Extract<EditorAction, {
+  type: 'append-point' | 'select-point' | 'move-point' | 'set-takeoff' | 'set-target';
+}>;
 
 type PointMarker = Readonly<{
   setLngLat(coordinate: [number, number]): PointMarker;
+  getElement(): HTMLElement;
   remove(): void;
 }>;
 
@@ -29,7 +33,6 @@ type PointMap = Readonly<{
   }>) => void): () => void;
 }>;
 
-type MarkerRecord = Readonly<{ marker: PointMarker; element: HTMLButtonElement }>;
 type Drag = {
   id: string;
   marker: PointMarker;
@@ -42,8 +45,8 @@ type Drag = {
   coordinate: Coordinate;
 };
 
-function sourceCoordinate(point: ProjectedPoint): [number, number] {
-  return [point.coordinate.longitudeDeg, point.coordinate.latitudeDeg];
+function sourceCoordinate(coordinate: Coordinate): [number, number] {
+  return [coordinate.longitudeDeg, coordinate.latitudeDeg];
 }
 
 function textCoordinate(coordinate: Coordinate): CoordinateText {
@@ -61,12 +64,13 @@ function isMapMarker(target: EventTarget | null): boolean {
   return target instanceof Element && target.closest('.maplibregl-marker') !== null;
 }
 
-export function createMapPoints(
+export function createMapSource(
   map: PointMap,
-  initialView: MapPointView,
-  dispatch: (action: MapPointAction) => void,
+  initialView: MapSourceView,
+  dispatch: (action: MapSourceAction) => void,
 ) {
-  const markers = new globalThis.Map<string, MarkerRecord>();
+  const markers = new globalThis.Map<string, PointMarker>();
+  const referenceMarkers = new globalThis.Map<'takeoff' | 'target', PointMarker>();
   let view = initialView;
   let drag: Drag | null = null;
 
@@ -75,19 +79,51 @@ export function createMapPoints(
     return index < 0 ? null : index + 1;
   }
 
+  function syncReferenceMarker(kind: 'takeoff' | 'target', coordinate: Coordinate | null) {
+    const existing = referenceMarkers.get(kind);
+    if (coordinate === null) {
+      existing?.remove();
+      referenceMarkers.delete(kind);
+      return;
+    }
+
+    if (existing !== undefined) {
+      existing.setLngLat(sourceCoordinate(coordinate));
+      return;
+    }
+
+    const element = document.createElement('button');
+    element.type = 'button';
+    element.className = `mission-reference-marker mission-reference-marker--${kind}`;
+    element.setAttribute('aria-label', kind === 'takeoff' ? 'Takeoff' : 'Target');
+    element.textContent = kind === 'takeoff' ? 'T' : '◎';
+    element.addEventListener('click', (event) => event.stopPropagation());
+    element.addEventListener('mousedown', (event) => event.stopPropagation());
+    element.addEventListener('touchstart', (event) => event.stopPropagation());
+    element.addEventListener('pointerdown', (event) => event.stopPropagation());
+    const marker = map.createMarker(element, sourceCoordinate(coordinate));
+    referenceMarkers.set(kind, marker);
+  }
+
+  function syncReferenceMarkers() {
+    syncReferenceMarker('takeoff', view.takeoff);
+    syncReferenceMarker('target', view.target);
+  }
+
   function syncMarkers() {
+    syncReferenceMarkers();
     const visibleIds = new Set(view.points.map((point) => point.id));
-    for (const [id, record] of markers) {
+    for (const [id, marker] of markers) {
       if (visibleIds.has(id)) continue;
-      record.marker.remove();
+      marker.remove();
       markers.delete(id);
     }
 
     for (const point of view.points) {
       const ordinal = sourceOrdinal(point.id);
       if (ordinal === null) continue;
-      let record = markers.get(point.id);
-      if (record === undefined) {
+      let marker = markers.get(point.id);
+      if (marker === undefined) {
         const element = document.createElement('button');
         element.type = 'button';
         element.className = 'mission-point-marker';
@@ -96,13 +132,14 @@ export function createMapPoints(
         element.addEventListener('touchstart', (event) => event.stopPropagation());
         element.addEventListener('pointerdown', (event) => beginDrag(point.id, event));
         element.addEventListener('click', () => dispatch({ type: 'select-point', id: point.id }));
-        record = { marker: map.createMarker(element, sourceCoordinate(point)), element };
-        markers.set(point.id, record);
+        marker = map.createMarker(element, sourceCoordinate(point.coordinate));
+        markers.set(point.id, marker);
       }
-      record.element.setAttribute('aria-label', `Waypoint ${ordinal}`);
-      record.element.setAttribute('aria-pressed', String(point.id === view.selectedPointId));
-      record.element.textContent = String(ordinal).padStart(2, '0');
-      if (drag?.id !== point.id) record.marker.setLngLat(sourceCoordinate(point));
+      const element = marker.getElement();
+      element.setAttribute('aria-label', `Waypoint ${ordinal}`);
+      element.setAttribute('aria-pressed', String(point.id === view.selectedPointId));
+      element.textContent = String(ordinal).padStart(2, '0');
+      if (drag?.id !== point.id) marker.setLngLat(sourceCoordinate(point.coordinate));
     }
   }
 
@@ -128,12 +165,12 @@ export function createMapPoints(
     dispatch({ type: 'select-point', id });
     drag = {
       id,
-      marker: record.marker,
+      marker: record,
       pointerId: event.pointerId,
       revision: view.revision,
       tool: view.tool,
       initialCoordinate: point.coordinate,
-      initialScreenPoint: map.project(sourceCoordinate(point)),
+      initialScreenPoint: map.project(sourceCoordinate(point.coordinate)),
       initialPointer: { x: event.clientX, y: event.clientY },
       coordinate: point.coordinate,
     };
@@ -181,22 +218,25 @@ export function createMapPoints(
 
   function handleMapClick(event: Readonly<{ lngLat: Readonly<{ lat: number; lng: number }>; target: EventTarget | null }>) {
     if (isMapMarker(event.target)) return;
-    if (view.tool !== 'add-points') return;
+    if (view.tool === 'select') return;
     const coordinate = normaliseMapCoordinate({
       latitudeDeg: event.lngLat.lat,
       longitudeDeg: event.lngLat.lng,
     });
-    const point: RoutePoint = {
-      id: crypto.randomUUID(),
-      coordinate: {
-        latitude: String(coordinate.latitudeDeg),
-        longitude: String(coordinate.longitudeDeg),
-      },
-    };
+    const coordinateText = textCoordinate(coordinate);
+    if (view.tool === 'set-takeoff') {
+      dispatch({ type: 'set-takeoff', coordinate: coordinateText });
+      return;
+    }
+    if (view.tool === 'set-target') {
+      dispatch({ type: 'set-target', coordinate: coordinateText });
+      return;
+    }
+    const point: RoutePoint = { id: crypto.randomUUID(), coordinate: coordinateText };
     dispatch({ type: 'append-point', point });
   }
 
-  function sync(nextView: MapPointView) {
+  function sync(nextView: MapSourceView) {
     const activeDrag = drag;
     view = nextView;
     if (activeDrag !== null && (activeDrag.revision !== view.revision || activeDrag.tool !== view.tool
@@ -216,8 +256,10 @@ export function createMapPoints(
       cancelDrag();
       window.removeEventListener('keydown', handleEscape);
       removeMapClick();
-      for (const record of markers.values()) record.marker.remove();
+      for (const marker of markers.values()) marker.remove();
       markers.clear();
+      for (const marker of referenceMarkers.values()) marker.remove();
+      referenceMarkers.clear();
     },
   };
 }

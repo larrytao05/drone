@@ -10,6 +10,8 @@ const emptyPointView = {
   selectedPointId: null,
   tool: 'select',
   revision: 0,
+  takeoff: null,
+  target: null,
 } as const;
 
 afterEach(() => {
@@ -22,7 +24,7 @@ beforeEach(() => resetMaplibreDouble());
 
 describe('local MapLibre foundation', () => {
   it('starts a source-free north-up canvas and disables rotation at the SDK boundary', async () => {
-    render(<MissionMap pointView={emptyPointView} onPointAction={vi.fn()} />);
+    render(<MissionMap sourceView={emptyPointView} onSourceAction={vi.fn()} />);
 
     await screen.findByText('Map ready');
     const [map] = createdMaps();
@@ -54,7 +56,7 @@ describe('local MapLibre foundation', () => {
   });
 
   it('keeps locator text editable on invalid input and changes only the local camera for valid input', async () => {
-    render(<MissionMap pointView={emptyPointView} onPointAction={vi.fn()} />);
+    render(<MissionMap sourceView={emptyPointView} onSourceAction={vi.fn()} />);
     await screen.findByText('Map ready');
     const latitude = await screen.findByRole<HTMLInputElement>('textbox', { name: 'Locator latitude' });
     const longitude = screen.getByRole<HTMLInputElement>('textbox', { name: 'Locator longitude' });
@@ -75,6 +77,36 @@ describe('local MapLibre foundation', () => {
     await waitFor(() => expect(status.textContent).toContain('Center 51.5074, -0.1278'));
     expect(latitude.value).toBe('51.5074');
     expect(longitude.value).toBe('-0.1278');
+  });
+
+  it('routes map clicks through the active takeoff and target source tools', async () => {
+    const onSourceAction = vi.fn();
+    const { rerender } = render(
+      <MissionMap
+        onSourceAction={onSourceAction}
+        sourceView={{ ...emptyPointView, tool: 'set-takeoff' }}
+      />,
+    );
+    await screen.findByText('Map ready');
+    const [map] = createdMaps();
+
+    act(() => map?.emitClick(181.25, -12.345678912));
+    expect(onSourceAction).toHaveBeenLastCalledWith({
+      type: 'set-takeoff',
+      coordinate: { latitude: '-12.345678912', longitude: '-178.75' },
+    });
+
+    rerender(
+      <MissionMap
+        onSourceAction={onSourceAction}
+        sourceView={{ ...emptyPointView, tool: 'set-target' }}
+      />,
+    );
+    act(() => map?.emitClick(-122.123456789, 37.765432109));
+    expect(onSourceAction).toHaveBeenLastCalledWith({
+      type: 'set-target',
+      coordinate: { latitude: '37.765432109', longitude: '-122.123456789' },
+    });
   });
 
   it('keeps editing and Save available when native map construction fails', async () => {
@@ -104,7 +136,7 @@ describe('local MapLibre foundation', () => {
   });
 
   it('removes a constructed map exactly once on unmount', async () => {
-    const { unmount } = render(<MissionMap pointView={emptyPointView} onPointAction={vi.fn()} />);
+    const { unmount } = render(<MissionMap sourceView={emptyPointView} onSourceAction={vi.fn()} />);
     await screen.findByText('Map ready');
     const [map] = createdMaps();
     unmount();
@@ -112,7 +144,7 @@ describe('local MapLibre foundation', () => {
   });
 
   it('does not construct a map when unmounted before the SDK import resolves', async () => {
-    const { unmount } = render(<MissionMap pointView={emptyPointView} onPointAction={vi.fn()} />);
+    const { unmount } = render(<MissionMap sourceView={emptyPointView} onSourceAction={vi.fn()} />);
     unmount();
     await waitFor(() => expect(createdMaps()).toHaveLength(0));
   });
