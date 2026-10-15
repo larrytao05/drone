@@ -6,74 +6,61 @@ test.beforeEach(async ({ page }) => {
   browserErrors.length = 0;
   page.on("pageerror", (error) => browserErrors.push(error));
   await page.goto("/");
-  await expect(page.getByRole("button", { name: "Run fixed route" })).toBeEnabled();
-  await page.context().setOffline(true);
+  await expect(page.getByRole("textbox", { name: "Route name" })).toHaveValue("");
 });
 
 test.afterEach(() => {
   expect(browserErrors).toEqual([]);
 });
 
-async function expectWaypoint(row: import("@playwright/test").Locator, values: readonly number[]) {
-  const cells = await row.locator("td").allTextContents();
-  expect(cells).toHaveLength(5);
-  for (const [index, expected] of values.entries()) {
-    expect(Number(cells[index])).toBeCloseTo(expected, 6);
-  }
-}
-
-test("the fixed route returns the known ordered waypoints while offline", async ({ page }) => {
-  await page.getByRole("button", { name: "Run fixed route" }).click();
-
-  const rows = page.getByRole("table", { name: "Calculated waypoints" }).locator("tbody tr");
-  await expect(rows).toHaveCount(2);
-  await expectWaypoint(rows.nth(0), [0, 0, 12, 90, -30]);
-  await expectWaypoint(rows.nth(1), [0, 0.001, 12, 90, -30]);
-  await expect(page.getByRole("status")).toHaveText("Calculated 2 waypoints.");
+test("the editor opens with persistent route settings, waypoints and map tools", async ({ page }) => {
+  await expect(page.getByRole("region", { name: "Route settings" })).toBeVisible();
+  await expect(page.getByRole("region", { name: "Waypoints" })).toBeVisible();
+  await expect(page.getByRole("region", { name: "Selected waypoint" })).toBeVisible();
+  await expect(page.getByRole("region", { name: "Mission map" })).toBeVisible();
+  await expect(page.getByRole("region", { name: "Route preview" })).toBeVisible();
+  await expect(page.getByRole("group", { name: "Map tools" }).getByRole("button")).toHaveCount(4);
+  await expect(page.getByRole("button", { name: "Save" })).toBeEnabled();
 });
 
-test("face-target framing follows a meridian toward the target while offline", async ({ page }) => {
-  await page.getByRole("button", { name: "Run face-target route" }).click();
+test("New clears editable source and resets the active map tool", async ({ page }) => {
+  await page.getByRole("textbox", { name: "Route name" }).fill("Harbor survey");
+  await page.getByRole("textbox", { name: "Height above takeoff" }).fill("32");
+  await page.getByRole("button", { name: "Add points" }).click();
+  await page.getByRole("button", { name: "New" }).click();
 
-  const rows = page.getByRole("table", { name: "Calculated waypoints" }).locator("tbody tr");
-  await expect(rows).toHaveCount(2);
-  await expectWaypoint(rows.nth(0), [0, 0, 5, 0, 1.2951931927091458]);
-  await expectWaypoint(rows.nth(1), [0.003, 0, 5, 180, 2.5890640401952405]);
+  await expect(page.getByRole("textbox", { name: "Route name" })).toHaveValue("");
+  await expect(page.getByRole("textbox", { name: "Height above takeoff" })).toHaveValue("");
+  await expect(page.getByRole("button", { name: "Select" })).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByRole("status", { name: "Review status" })).toContainText("Not reviewed");
+  await expect(page.getByRole("status", { name: "Save status" })).toContainText("Unsaved");
 });
 
-test("invalid routes show errors and each new result clears the previous result", async ({ page }) => {
-  await page.getByRole("button", { name: "Run fixed route" }).click();
-  await expect(page.getByRole("table", { name: "Calculated waypoints" })).toBeVisible();
-
-  await page.getByRole("button", { name: "Run invalid route" }).click();
-  const errors = page.getByRole("list", { name: "Planning errors" });
-  await expect(errors).toContainText("malformed");
-  await expect(errors).toContainText("shot.anchors");
-  await expect(errors).toContainText("A route requires at least two anchors.");
-  await expect(page.getByRole("status")).toHaveText("The route has input errors.");
-  await expect(page.getByRole("table", { name: "Calculated waypoints" })).toHaveCount(0);
-
-  await page.getByRole("button", { name: "Run face-target route" }).click();
-  await expect(page.getByRole("table", { name: "Calculated waypoints" })).toBeVisible();
-  await expect(errors).toHaveCount(0);
-  await expectWaypoint(page.getByRole("table", { name: "Calculated waypoints" }).locator("tbody tr").nth(1), [0.003, 0, 5, 180, 2.5890640401952405]);
-});
-
-test("the page remains usable at a narrow viewport in light and dark color schemes", async ({ page }, testInfo) => {
+test("the editor fits 320 and 1024 pixels and responds to system color scheme", async ({ page }, testInfo) => {
   await page.setViewportSize({ width: 320, height: 740 });
   await page.emulateMedia({ colorScheme: "light" });
-  const lightBackground = await page.locator("body").evaluate((body) => getComputedStyle(body).backgroundColor);
+  const lightBackground = await page.locator("main").evaluate((main) => getComputedStyle(main).backgroundColor);
   await page.emulateMedia({ colorScheme: "dark" });
-  const darkBackground = await page.locator("body").evaluate((body) => getComputedStyle(body).backgroundColor);
+  const darkBackground = await page.locator("main").evaluate((main) => getComputedStyle(main).backgroundColor);
 
   expect(lightBackground).not.toEqual(darkBackground);
-  await page.getByRole("button", { name: "Run face-target route" }).press("Enter");
-  await expect(page.getByRole("table", { name: "Calculated waypoints" })).toBeVisible();
+  await page.getByRole("textbox", { name: "Route name" }).focus();
+  await page.keyboard.type("Keyboard route");
+  await expect(page.getByRole("textbox", { name: "Route name" })).toHaveValue("Keyboard route");
   expect(await page.locator("body").evaluate((body) => body.scrollWidth <= window.innerWidth)).toBe(true);
   await page.screenshot({ path: testInfo.outputPath("narrow-dark.png") });
   await page.emulateMedia({ colorScheme: "light" });
   await page.screenshot({ path: testInfo.outputPath("narrow-light.png") });
   await page.setViewportSize({ width: 1024, height: 740 });
   expect(await page.locator("body").evaluate((body) => body.scrollWidth <= window.innerWidth)).toBe(true);
+  const map = await page.getByRole("region", { name: "Mission map" }).boundingBox();
+  const inspector = await page.getByRole("region", { name: "Route settings" }).boundingBox();
+  expect(map).not.toBeNull();
+  expect(inspector).not.toBeNull();
+  expect(map?.width).toBeGreaterThan(inspector?.width ?? 0);
   await page.screenshot({ path: testInfo.outputPath("desktop-light.png") });
+  await page.emulateMedia({ colorScheme: "dark" });
+  const desktopDarkBackground = await page.locator("main").evaluate((main) => getComputedStyle(main).backgroundColor);
+  expect(desktopDarkBackground).toBe(darkBackground);
+  await page.screenshot({ path: testInfo.outputPath("desktop-dark.png") });
 });

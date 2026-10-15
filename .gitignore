@@ -1,6 +1,10 @@
 .DS_Store
 __pycache__/
 node_modules/
+.env
+.env.local
+.env.*
+!.env.example
 dist/
 /plans/
 /ROADMAP.md
@@ -11,3 +15,5 @@ dist/
 *.tsbuildinfo
 /playwright-report/
 /test-results/
+
+/public/maplibre-gl-worker.mjs
