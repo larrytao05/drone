@@ -2,7 +2,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MissionEditor } from '../../web/MissionEditor.js';
 import { MissionMap } from '../../web/MissionMap.js';
-import { createdMaps, failMapConstruction, resetMaplibreDouble, workerUrl } from './maplibre-double.js';
+import { analyseDraft } from '../../web/editor.js';
+import { buildMapGeometry } from '../../web/map-geometry.js';
+import { makeDraft } from './fixtures.js';
+import { createdMaps, createdMarkers, deferMapLoad, failMapConstruction, resetMaplibreDouble, workerUrl } from './maplibre-double.js';
 
 const emptyPointView = {
   points: [],
@@ -13,6 +16,17 @@ const emptyPointView = {
   takeoff: null,
   target: null,
 } as const;
+const emptyGeometry = {
+  points: [], lines: [], headings: [], omittedPointIds: [], takeoff: null, target: null,
+} as const;
+
+function calculatedGeometry(longitude = '-122.4184') {
+  const analysis = analyseDraft(makeDraft({ points: [
+    { id: '00000000-0000-4000-8000-000000000001', coordinate: { latitude: '37.7749', longitude: '-122.4194' } },
+    { id: '00000000-0000-4000-8000-000000000002', coordinate: { latitude: '37.7759', longitude } },
+  ] }));
+  return buildMapGeometry({ sourcePoints: analysis.sourcePoints, route: analysis.route, takeoff: analysis.takeoff, target: analysis.target });
+}
 
 afterEach(() => {
   cleanup();
@@ -23,8 +37,41 @@ afterEach(() => {
 beforeEach(() => resetMaplibreDouble());
 
 describe('local MapLibre foundation', () => {
+  it('renders only the latest calculated lines and headings after style load, then clears them', async () => {
+    deferMapLoad();
+    const first = calculatedGeometry();
+    const latest = calculatedGeometry('-122.4174');
+    const { rerender } = render(<MissionMap geometry={first} sourceView={emptyPointView} onSourceAction={vi.fn()} />);
+    await waitFor(() => expect(createdMaps()).toHaveLength(1));
+    rerender(<MissionMap geometry={latest} sourceView={emptyPointView} onSourceAction={vi.fn()} />);
+    const [map] = createdMaps();
+    act(() => map?.emit('load'));
+
+    const source = map?.getSource('calculated-route');
+    expect(source?.data).toEqual({
+      type: 'FeatureCollection',
+      features: latest.lines.map((line) => ({
+        type: 'Feature',
+        properties: {},
+        geometry: { type: 'LineString', coordinates: line.map(({ longitudeDeg, latitudeDeg }) => [longitudeDeg, latitudeDeg]) },
+      })),
+    });
+    const headings = document.querySelectorAll<HTMLElement>('.mission-heading-marker');
+    expect([...headings].map((heading) => heading.getAttribute('aria-label'))).toEqual([
+      'Camera heading for waypoint 1',
+      'Camera heading for waypoint 2',
+    ]);
+    expect(createdMarkers().map(({ rotation, options }) => [rotation, options.rotationAlignment]))
+      .toEqual([[90, 'map'], [90, 'map']]);
+    expect(createdMarkers().map(({ options }) => options.offset)).toEqual([[0, -30], [0, -30]]);
+
+    rerender(<MissionMap geometry={emptyGeometry} sourceView={emptyPointView} onSourceAction={vi.fn()} />);
+    expect(map?.getSource('calculated-route')?.data).toEqual({ type: 'FeatureCollection', features: [] });
+    expect(document.querySelectorAll('.mission-heading-marker')).toHaveLength(0);
+  });
+
   it('starts a source-free north-up canvas and disables rotation at the SDK boundary', async () => {
-    render(<MissionMap sourceView={emptyPointView} onSourceAction={vi.fn()} />);
+    render(<MissionMap geometry={emptyGeometry} sourceView={emptyPointView} onSourceAction={vi.fn()} />);
 
     await screen.findByText('Map ready');
     const [map] = createdMaps();
@@ -56,7 +103,7 @@ describe('local MapLibre foundation', () => {
   });
 
   it('keeps locator text editable on invalid input and changes only the local camera for valid input', async () => {
-    render(<MissionMap sourceView={emptyPointView} onSourceAction={vi.fn()} />);
+    render(<MissionMap geometry={emptyGeometry} sourceView={emptyPointView} onSourceAction={vi.fn()} />);
     await screen.findByText('Map ready');
     const latitude = await screen.findByRole<HTMLInputElement>('textbox', { name: 'Locator latitude' });
     const longitude = screen.getByRole<HTMLInputElement>('textbox', { name: 'Locator longitude' });
@@ -83,6 +130,7 @@ describe('local MapLibre foundation', () => {
     const onSourceAction = vi.fn();
     const { rerender } = render(
       <MissionMap
+        geometry={emptyGeometry}
         onSourceAction={onSourceAction}
         sourceView={{ ...emptyPointView, tool: 'set-takeoff' }}
       />,
@@ -98,6 +146,7 @@ describe('local MapLibre foundation', () => {
 
     rerender(
       <MissionMap
+        geometry={emptyGeometry}
         onSourceAction={onSourceAction}
         sourceView={{ ...emptyPointView, tool: 'set-target' }}
       />,
@@ -136,15 +185,25 @@ describe('local MapLibre foundation', () => {
   });
 
   it('removes a constructed map exactly once on unmount', async () => {
-    const { unmount } = render(<MissionMap sourceView={emptyPointView} onSourceAction={vi.fn()} />);
+    const { unmount } = render(<MissionMap geometry={emptyGeometry} sourceView={emptyPointView} onSourceAction={vi.fn()} />);
     await screen.findByText('Map ready');
     const [map] = createdMaps();
     unmount();
     expect(map?.removeCount).toBe(1);
   });
 
+  it('disposes calculated layers and headings before removing the native map', async () => {
+    const { unmount } = render(<MissionMap geometry={calculatedGeometry()} sourceView={emptyPointView} onSourceAction={vi.fn()} />);
+    await screen.findByText('Map ready');
+    const [map] = createdMaps();
+
+    unmount();
+
+    expect(map?.removeSnapshot).toEqual({ sources: [], layers: [], headings: 0 });
+  });
+
   it('does not construct a map when unmounted before the SDK import resolves', async () => {
-    const { unmount } = render(<MissionMap sourceView={emptyPointView} onSourceAction={vi.fn()} />);
+    const { unmount } = render(<MissionMap geometry={emptyGeometry} sourceView={emptyPointView} onSourceAction={vi.fn()} />);
     unmount();
     await waitFor(() => expect(createdMaps()).toHaveLength(0));
   });

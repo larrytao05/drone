@@ -246,6 +246,7 @@ export function MissionEditor() {
             ))}
           </div>
           <MissionMap
+            geometry={geometry}
             onSourceAction={(action: MapSourceAction) => dispatch(action)}
             sourceView={sourceView}
           />

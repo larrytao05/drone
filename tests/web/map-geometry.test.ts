@@ -28,7 +28,10 @@ describe('Source-to-map geometry', () => {
     const result = geometry(draft);
     expect(result.points.map((point) => point.id)).toEqual([firstId, secondId]);
     expect(result.lines).toEqual([[{ latitudeDeg: 37.7749, longitudeDeg: -122.4194 }, { latitudeDeg: 37.7759, longitudeDeg: -122.4184 }]]);
-    expect(result.headings).toEqual([{ coordinate: { latitudeDeg: 37.7749, longitudeDeg: -122.4194 }, headingDeg: 90 }, { coordinate: { latitudeDeg: 37.7759, longitudeDeg: -122.4184 }, headingDeg: 90 }]);
+    expect(result.headings).toEqual([
+      { coordinate: { latitudeDeg: 37.7749, longitudeDeg: -122.4194 }, headingDeg: 90, waypointOrdinal: 1 },
+      { coordinate: { latitudeDeg: 37.7759, longitudeDeg: -122.4184 }, headingDeg: 90, waypointOrdinal: 2 },
+    ]);
     expect(result.takeoff).toEqual({ latitudeDeg: 37.774, longitudeDeg: -122.42 });
     expect(result.target).toBeNull();
     expect(draft).toEqual(snapshot);
@@ -115,6 +118,7 @@ describe('Source-to-map geometry', () => {
     expect(result.points.map((point) => point.id)).toEqual([secondId]);
     expect(result.lines).toEqual([]);
     expect(result.headings).toHaveLength(1);
+    expect(result.headings[0]?.waypointOrdinal).toBe(2);
     const analysis = analyseDraft(draft);
     expect(analysis.route.kind).toBe('calculated');
     if (analysis.route.kind === 'calculated') expect(analysis.route.waypoints[0]?.coordinate.latitudeDeg).toBe(90);
