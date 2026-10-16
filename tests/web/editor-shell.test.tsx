@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import type { Dispatch } from 'react';
 import { Inspector } from '../../web/Inspector.js';
 import { MissionEditor } from '../../web/MissionEditor.js';
@@ -444,5 +444,86 @@ describe('editor shell actions', () => {
     await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
 
     expect(screen.getByRole<HTMLInputElement>('textbox', { name: 'Route name' }).value).toBe('Latest import');
+  });
+
+  it('does not apply a delayed import after the source changes', async () => {
+    render(<MissionEditor />);
+    let finishImport: (text: string) => void = () => undefined;
+    const input = screen.getByLabelText('Import backup');
+    fireEvent.change(input, {
+      target: { files: [fileWithText('delayed.json', () => new Promise<string>((resolve) => { finishImport = resolve; }))] },
+    });
+    fireEvent.change(screen.getByRole<HTMLInputElement>('textbox', { name: 'Route name' }), { target: { value: 'Newer work' } });
+    await act(async () => { finishImport(encodeBackup(makeDraft({ name: 'Stale import' }))); });
+    expect(screen.getByRole<HTMLInputElement>('textbox', { name: 'Route name' }).value).toBe('Newer work');
+  });
+
+  it('does not apply a delayed import after New or Load', async () => {
+    const saved = makeDraft({ name: 'Loaded work' });
+    seedLocalDraft(saved, false);
+    render(<MissionEditor />);
+    const input = screen.getByLabelText('Import backup');
+    let finishNewImport: (text: string) => void = () => undefined;
+    fireEvent.change(input, {
+      target: { files: [fileWithText('delayed-new.json', () => new Promise<string>((resolve) => { finishNewImport = resolve; }))] },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'New' }));
+    await act(async () => { finishNewImport(encodeBackup(makeDraft({ name: 'Stale after New' }))); });
+    expect(screen.getByRole<HTMLInputElement>('textbox', { name: 'Route name' }).value).toBe('');
+
+    let finishLoadImport: (text: string) => void = () => undefined;
+    fireEvent.change(input, {
+      target: { files: [fileWithText('delayed-load.json', () => new Promise<string>((resolve) => { finishLoadImport = resolve; }))] },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Load' }));
+    await act(async () => { finishLoadImport(encodeBackup(makeDraft({ name: 'Stale after Load' }))); });
+    expect(screen.getByRole<HTMLInputElement>('textbox', { name: 'Route name' }).value).toBe(saved.name);
+  });
+
+  it('does not show a delayed import error after the source changes', async () => {
+    render(<MissionEditor />);
+    let finishImport: (text: string) => void = () => undefined;
+    const input = screen.getByLabelText('Import backup');
+    fireEvent.change(input, {
+      target: { files: [fileWithText('invalid.json', () => new Promise<string>((resolve) => { finishImport = resolve; }))] },
+    });
+    fireEvent.change(screen.getByRole<HTMLInputElement>('textbox', { name: 'Route name' }), { target: { value: 'Newer work' } });
+    await act(async () => { finishImport('{'); });
+    expect(screen.getByRole<HTMLInputElement>('textbox', { name: 'Route name' }).value).toBe('Newer work');
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  it('does not show a delayed read failure after the source changes', async () => {
+    render(<MissionEditor />);
+    let rejectImport: (error: Error) => void = () => undefined;
+    const input = screen.getByLabelText('Import backup');
+    fireEvent.change(input, {
+      target: { files: [fileWithText('unreadable.json', () => new Promise<string>((_, reject) => { rejectImport = reject; }))] },
+    });
+    fireEvent.change(screen.getByRole<HTMLInputElement>('textbox', { name: 'Route name' }), { target: { value: 'Newer work' } });
+    await act(async () => { rejectImport(new Error('read failed')); });
+
+    expect(screen.getByRole<HTMLInputElement>('textbox', { name: 'Route name' }).value).toBe('Newer work');
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  it('allows a delayed import after selection-only changes', async () => {
+    render(<MissionEditor />);
+    const initial = makeDraft({ name: 'Initial', points: [{
+      id: '11111111-1111-4111-8111-111111111111',
+      coordinate: { latitude: '37', longitude: '-122' },
+    }] });
+    const input = screen.getByLabelText('Import backup');
+    fireEvent.change(input, { target: { files: [fileWithText('initial.json', encodeBackup(initial))] } });
+    await screen.findByDisplayValue('Initial');
+
+    let finishImport: (text: string) => void = () => undefined;
+    fireEvent.change(input, {
+      target: { files: [fileWithText('delayed.json', () => new Promise<string>((resolve) => { finishImport = resolve; }))] },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Select waypoint 1' }));
+    await act(async () => { finishImport(encodeBackup(makeDraft({ name: 'Imported after selection' }))); });
+
+    expect(screen.getByRole<HTMLInputElement>('textbox', { name: 'Route name' }).value).toBe('Imported after selection');
   });
 });

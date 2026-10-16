@@ -78,7 +78,9 @@ export function MissionEditor() {
   const [saveTransaction, setSaveTransaction] = useState<SaveTransaction | null>(null);
   const importInput = useRef<HTMLInputElement>(null);
   const importRequest = useRef(0);
+  const currentRevision = useRef(state.revision);
   const saveInProgress = useRef(false);
+  currentRevision.current = state.revision;
   const analysis = useMemo(() => analyseDraft(state.draft), [state.draft]);
   const geometry = useMemo(() => buildMapGeometry({
     sourcePoints: analysis.sourcePoints,
@@ -114,18 +116,27 @@ export function MissionEditor() {
   async function importBackup(file: File | undefined) {
     if (!file) return;
     const request = ++importRequest.current;
+    const revision = state.revision;
     setImportError(null);
     try {
-      const result = decodeBackup(await file.text());
-      if (request !== importRequest.current) return;
+      const text = await file.text();
+      if (request !== importRequest.current || revision !== currentRevision.current) return;
+      const result = decodeBackup(text);
       if (!result.ok) {
         setImportError(`The backup is invalid and was not imported: ${result.issues[0]?.message ?? 'Check the backup file.'}`);
         return;
       }
       dispatch({ type: 'import-draft', draft: result.value });
     } catch {
-      if (request === importRequest.current) setImportError('The backup file could not be read and was not imported.');
+      if (request === importRequest.current && revision === currentRevision.current) {
+        setImportError('The backup file could not be read and was not imported.');
+      }
     }
+  }
+
+  function startNew() {
+    importRequest.current += 1;
+    dispatch({ type: 'new' });
   }
 
   function exportBackup() {
@@ -224,7 +235,7 @@ export function MissionEditor() {
               {isSaved(state) ? 'Saved' : 'Unsaved'}
             </span>
           </div>
-          <button className={styles.secondaryButton} onClick={() => dispatch({ type: 'new' })} type="button">New</button>
+          <button className={styles.secondaryButton} onClick={startNew} type="button">New</button>
           <button className={styles.quietButton} onClick={openSave} type="button">Save</button>
         </div>
       </header>
