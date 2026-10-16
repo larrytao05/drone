@@ -31,10 +31,14 @@ function calculatedGeometry(longitude = '-122.4184') {
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
   window.localStorage.clear();
 });
 
-beforeEach(() => resetMaplibreDouble());
+beforeEach(() => {
+  resetMaplibreDouble();
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({ kind: 'local' }) }));
+});
 
 describe('local MapLibre foundation', () => {
   it('renders only the latest calculated lines and headings after style load, then clears them', async () => {
@@ -88,6 +92,7 @@ describe('local MapLibre foundation', () => {
       attributionControl: false,
     });
     expect(map?.disabledRotations).toEqual(['keyboard', 'touch']);
+    expect(map?.projection).toEqual({ type: 'mercator' });
     expect(workerUrl()).toBe('/maplibre-gl-worker.mjs');
     expect(map?.options.style).toEqual({
       version: 8,
@@ -100,6 +105,73 @@ describe('local MapLibre foundation', () => {
     expect(map?.controlPositions).toEqual(['bottom-right']);
     expect(map?.canvas.isConnected).toBe(true);
     expect(screen.getByText('Imagery is not connected.')).toBeTruthy();
+  });
+
+  it('uses the runtime provider style with native noncompact attribution and uncached requests', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ kind: 'provider', styleUrl: 'https://api.maptiler.com/maps/hybrid-v4/style.json?key=dummy-fixture' }),
+    }));
+    render(<MissionMap geometry={emptyGeometry} sourceView={emptyPointView} onSourceAction={vi.fn()} />);
+    await screen.findByText('Map ready');
+
+    const [map] = createdMaps();
+    expect(map?.options.style).toBe('https://api.maptiler.com/maps/hybrid-v4/style.json?key=dummy-fixture');
+    expect(map?.options.attributionControl).toBe(false);
+    expect(map?.controls).toHaveLength(2);
+    expect(map?.controlPositions).toEqual(['bottom-left', 'bottom-right']);
+    expect(map?.options.transformRequest?.('https://api.maptiler.com/tiles/satellite-v2/1/0/0.jpg'))
+      .toEqual({ url: 'https://api.maptiler.com/tiles/satellite-v2/1/0/0.jpg', cache: 'no-store' });
+  });
+
+  it('does not construct the SDK when runtime configuration has no key', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({ kind: 'missing' }) }));
+    render(<MissionMap geometry={emptyGeometry} sourceView={emptyPointView} onSourceAction={vi.fn()} />);
+
+    await screen.findByText('Map rendering unavailable');
+    expect(createdMaps()).toHaveLength(0);
+    expect(screen.getByText(/Map imagery is unavailable/)).toBeTruthy();
+  });
+
+  it('fails closed on a malformed or failed runtime configuration response', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({ kind: 'provider' }) }));
+    const first = render(<MissionMap geometry={emptyGeometry} sourceView={emptyPointView} onSourceAction={vi.fn()} />);
+    await screen.findByText('Map rendering unavailable');
+    expect(createdMaps()).toHaveLength(0);
+    first.unmount();
+
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, json: async () => ({}) }));
+    render(<MissionMap geometry={calculatedGeometry()} sourceView={emptyPointView} onSourceAction={vi.fn()} />);
+    await screen.findByText('Map rendering unavailable');
+    expect(createdMaps()).toHaveLength(0);
+  });
+
+  it('fails closed when the runtime configuration request rejects', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('offline')));
+    render(<MissionMap geometry={emptyGeometry} sourceView={emptyPointView} onSourceAction={vi.fn()} />);
+
+    await screen.findByText('Map rendering unavailable');
+    expect(createdMaps()).toHaveLength(0);
+  });
+
+  it('aborts runtime configuration and ignores a late response after unmount', async () => {
+    let resolveResponse: ((value: { ok: boolean; json: () => Promise<{ kind: 'local' }> }) => void) | undefined;
+    const response = new Promise<{ ok: boolean; json: () => Promise<{ kind: 'local' }> }>((resolve) => { resolveResponse = resolve; });
+    const fetchMock = vi.fn((_url: string, options: { signal: AbortSignal }) => {
+      options.signal.addEventListener('abort', () => undefined);
+      return response;
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const { unmount } = render(<MissionMap geometry={emptyGeometry} sourceView={emptyPointView} onSourceAction={vi.fn()} />);
+    unmount();
+    expect(fetchMock.mock.calls[0]?.[1]?.signal.aborted).toBe(true);
+    await act(async () => {
+      resolveResponse?.({ ok: true, json: async () => ({ kind: 'local' }) });
+      await response;
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(createdMaps()).toHaveLength(0);
   });
 
   it('keeps locator text editable on invalid input and changes only the local camera for valid input', async () => {
