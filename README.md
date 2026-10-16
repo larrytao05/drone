@@ -1,4 +1,4 @@
-This project builds an LLM-powered controller for a DJI drone.
+This project builds an LLM-powered flight planner for a DJI drone.
 
 # System design
 
