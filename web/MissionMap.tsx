@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import type { StyleSpecification } from 'maplibre-gl';
+import { z } from 'zod';
 import { parseNumericText } from './numeric-input';
 import type { MapSourceAction, MapSourceView } from './map-source';
 import { createMapSource } from './map-source';
@@ -12,6 +13,11 @@ import styles from './MissionMap.module.css';
 type MapStatus = 'loading' | 'ready' | 'unavailable';
 type Camera = Readonly<{ latitude: number; longitude: number; zoom: number }>;
 type LocatorErrors = Readonly<{ latitude: string | null; longitude: string | null }>;
+const mapConfigSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('local') }),
+  z.object({ kind: z.literal('provider'), styleUrl: z.string().url() }),
+  z.object({ kind: z.literal('missing') }),
+]);
 
 const initialCamera: Camera = { latitude: 37.7749, longitude: -122.4194, zoom: 15 };
 const localStyle: StyleSpecification = {
@@ -51,6 +57,7 @@ export function MissionMap({ geometry, sourceView, onSourceAction }: MissionMapP
   const sourceViewRef = useRef(sourceView);
   const onSourceActionRef = useRef(onSourceAction);
   const [status, setStatus] = useState<MapStatus>('loading');
+  const [localMode, setLocalMode] = useState(false);
   const [moving, setMoving] = useState(false);
   const [camera, setCamera] = useState(initialCamera);
   const [latitude, setLatitude] = useState('');
@@ -73,6 +80,7 @@ export function MissionMap({ geometry, sourceView, onSourceAction }: MissionMapP
     let disposed = false;
     let failed = false;
     let map: import('maplibre-gl').Map | null = null;
+    const configAbort = new AbortController();
 
     function failMap() {
       if (disposed || failed) return;
@@ -91,15 +99,15 @@ export function MissionMap({ geometry, sourceView, onSourceAction }: MissionMapP
       setStatus('unavailable');
     }
 
-    async function createMap() {
+    async function createMap(style: StyleSpecification | string) {
       try {
-        const { Map, Marker, NavigationControl, setWorkerUrl } = await import('maplibre-gl');
+        const { AttributionControl, Map, Marker, NavigationControl, setWorkerUrl } = await import('maplibre-gl');
         if (disposed || container.current === null) return;
         setWorkerUrl('/maplibre-gl-worker.mjs');
 
         map = new Map({
           container: container.current,
-          style: localStyle,
+          style,
           center: [initialCamera.longitude, initialCamera.latitude],
           zoom: initialCamera.zoom,
           bearing: 0,
@@ -109,7 +117,13 @@ export function MissionMap({ geometry, sourceView, onSourceAction }: MissionMapP
           pitchWithRotate: false,
           touchPitch: false,
           attributionControl: false,
+          ...(style === localStyle ? {} : {
+            transformRequest: (url: string) => ({ url, cache: 'no-store' }),
+          }),
         });
+        if (style !== localStyle) {
+          map.addControl(new AttributionControl({ compact: false }), 'bottom-left');
+        }
         mapRef.current = map;
         map.keyboard.disableRotation();
         map.touchZoomRotate.disableRotation();
@@ -170,6 +184,12 @@ export function MissionMap({ geometry, sourceView, onSourceAction }: MissionMapP
         map.on('webglcontextlost', failMap);
         map.on('load', () => {
           if (disposed || failed || map === null) return;
+          try {
+            map.setProjection({ type: 'mercator' });
+          } catch {
+            failMap();
+            return;
+          }
           previewAdapterRef.current?.loaded();
           setStatus('ready');
           setCamera({
@@ -196,10 +216,31 @@ export function MissionMap({ geometry, sourceView, onSourceAction }: MissionMapP
       }
     }
 
-    void createMap();
+    async function loadConfiguration() {
+      try {
+        const response = await fetch('/api/map-config', { cache: 'no-store', signal: configAbort.signal });
+        if (!response.ok || disposed) {
+          if (!disposed) failMap();
+          return;
+        }
+        const config = mapConfigSchema.parse(await response.json());
+        if (disposed) return;
+        if (config.kind === 'missing') {
+          setStatus('unavailable');
+          return;
+        }
+        setLocalMode(config.kind === 'local');
+        await createMap(config.kind === 'local' ? localStyle : config.styleUrl);
+      } catch {
+        if (!disposed) failMap();
+      }
+    }
+
+    void loadConfiguration();
 
     return () => {
       disposed = true;
+      configAbort.abort();
       sourceAdapterRef.current?.dispose();
       sourceAdapterRef.current = null;
       previewAdapterRef.current?.dispose();
@@ -237,45 +278,37 @@ export function MissionMap({ geometry, sourceView, onSourceAction }: MissionMapP
       className={styles.mapSurface}
       role="region"
     >
-      <div aria-label="Map canvas" className={styles.canvas} ref={container} />
-      <div className={styles.mapPanel}>
-        <form aria-label="Map locator" className={styles.locator} onSubmit={(event) => {
-          event.preventDefault();
-          locate();
-        }}>
-          <label>
-            <span>Locator latitude</span>
-            <input
-              aria-invalid={errors.latitude !== null}
-              inputMode="decimal"
-              onChange={(event) => setLatitude(event.currentTarget.value)}
-              value={latitude}
-            />
-          </label>
-          <label>
-            <span>Locator longitude</span>
-            <input
-              aria-invalid={errors.longitude !== null}
-              inputMode="decimal"
-              onChange={(event) => setLongitude(event.currentTarget.value)}
-              value={longitude}
-            />
-          </label>
-          <button disabled={status !== 'ready'} type="submit">Locate</button>
-          {(errors.latitude !== null || errors.longitude !== null) && (
-            <p className={styles.locatorError} role="alert">
-              {[errors.latitude, errors.longitude].filter((error) => error !== null).join(' ')}
-            </p>
-          )}
-        </form>
+      <div className={styles.mapFrame}>
+        <div aria-label="Map canvas" className={styles.canvas} ref={container} />
+        <div className={styles.mapPanel}>
+          <form aria-label="Map locator" className={styles.locator} onSubmit={(event) => {
+            event.preventDefault();
+            locate();
+          }}>
+            <label>
+              <span>Locator latitude</span>
+              <input aria-invalid={errors.latitude !== null} inputMode="decimal" onChange={(event) => setLatitude(event.currentTarget.value)} value={latitude} />
+            </label>
+            <label>
+              <span>Locator longitude</span>
+              <input aria-invalid={errors.longitude !== null} inputMode="decimal" onChange={(event) => setLongitude(event.currentTarget.value)} value={longitude} />
+            </label>
+            <button disabled={status !== 'ready'} type="submit">Locate</button>
+            {(errors.latitude !== null || errors.longitude !== null) && (
+              <p className={styles.locatorError} role="alert">
+                {[errors.latitude, errors.longitude].filter((error) => error !== null).join(' ')}
+              </p>
+            )}
+          </form>
+        </div>
       </div>
       <div className={styles.mapStatusPanel}>
         <div aria-label="Map status" aria-live="polite" aria-busy={status === 'loading' || moving} className={styles.status} role="status">
           <span>{statusText}</span>
           {status === 'ready' && <span aria-label="Map view">{cameraText(camera)}</span>}
         </div>
-        {status === 'unavailable' && <p className={styles.mapError}>The local map renderer is unavailable. Route editing and saving remain available.</p>}
-        <p className={styles.status}>Imagery is not connected.</p>
+        {status === 'unavailable' && <p className={styles.mapError}>Map imagery is unavailable. Route editing and saving remain available.</p>}
+        {localMode && <p className={styles.status}>Imagery is not connected.</p>}
       </div>
     </section>
   );
