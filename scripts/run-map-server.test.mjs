@@ -1,12 +1,15 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { chmod, copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 const sourceScripts = fileURLToPath(new URL('.', import.meta.url));
+const require = createRequire(import.meta.url);
+const nextEnvPath = require.resolve('@next/env');
 
 for (const initialPlanner of ['missing', 'stale']) {
   test(`development launcher prepares a ${initialPlanner} planner before Next starts`, async () => {
@@ -67,3 +70,45 @@ process.stdout.write('fake Next started\\n');
     }
   });
 }
+
+test('missing mode keeps the provider key explicitly empty through Next dotenv loading', async () => {
+  const fixture = await mkdtemp(join(tmpdir(), 'drone-map-server-missing-'));
+  const scripts = join(fixture, 'scripts');
+  const maplibrePackage = join(fixture, 'node_modules', 'maplibre-gl');
+  const nextBin = join(fixture, 'node_modules', 'next', 'dist', 'bin', 'next');
+  const events = join(fixture, 'events.log');
+
+  try {
+    await mkdir(scripts, { recursive: true });
+    await mkdir(maplibrePackage, { recursive: true });
+    await mkdir(join(fixture, 'node_modules', 'next', 'dist', 'bin'), { recursive: true });
+    await copyFile(join(sourceScripts, 'run-map-server.mjs'), join(scripts, 'run-map-server.mjs'));
+    await copyFile(join(sourceScripts, 'prepare-maplibre-worker.mjs'), join(scripts, 'prepare-maplibre-worker.mjs'));
+    await copyFile(join(sourceScripts, 'redact-output.mjs'), join(scripts, 'redact-output.mjs'));
+    await writeFile(join(maplibrePackage, 'package.json'), JSON.stringify({ name: 'maplibre-gl', type: 'module', exports: './index.js' }));
+    await writeFile(join(maplibrePackage, 'index.js'), '');
+    await writeFile(join(maplibrePackage, 'maplibre-gl-worker.mjs'), 'worker');
+    await writeFile(join(fixture, '.env.local'), 'MAPTILER_API_KEY=fixture-provider-key\n');
+    await writeFile(nextBin, `const { appendFileSync } = require('node:fs');
+const { loadEnvConfig } = require(${JSON.stringify(nextEnvPath)});
+const keyBefore = process.env.MAPTILER_API_KEY ?? null;
+loadEnvConfig(process.cwd());
+appendFileSync(process.env.LAUNCH_EVENTS, JSON.stringify({ step: 'next', keyBefore, keyAfter: process.env.MAPTILER_API_KEY ?? null, mode: process.env.DRONE_MAP_MODE }) + '\\n');
+`);
+
+    const env = { ...process.env, LAUNCH_EVENTS: events, DRONE_PLANNER_BUILD: 'ready' };
+    delete env.MAPTILER_API_KEY;
+    delete env.NEXT_PUBLIC_MAPTILER_API_KEY;
+    delete env.DRONE_MAP_ENV_FILE;
+    execFileSync(process.execPath, [join(scripts, 'run-map-server.mjs'), 'missing', 'dev', '9876'], {
+      cwd: fixture,
+      env,
+      stdio: 'ignore',
+    });
+
+    const [event] = (await readFile(events, 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
+    assert.deepEqual(event, { step: 'next', keyBefore: '', keyAfter: '', mode: 'provider' });
+  } finally {
+    await rm(fixture, { recursive: true, force: true });
+  }
+});
