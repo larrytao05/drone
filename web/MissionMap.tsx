@@ -3,8 +3,8 @@
 import { useEffect, useRef, useState } from 'react';
 import type { StyleSpecification } from 'maplibre-gl';
 import { parseNumericText } from './numeric-input';
-import type { MapPointAction, MapPointView } from './map-points';
-import { createMapPoints } from './map-points';
+import type { MapSourceAction, MapSourceView } from './map-source';
+import { createMapSource } from './map-source';
 import styles from './MissionMap.module.css';
 
 type MapStatus = 'loading' | 'ready' | 'unavailable';
@@ -35,16 +35,16 @@ function cameraText(camera: Camera): string {
 }
 
 type MissionMapProps = Readonly<{
-  pointView: MapPointView;
-  onPointAction: (action: MapPointAction) => void;
+  sourceView: MapSourceView;
+  onSourceAction: (action: MapSourceAction) => void;
 }>;
 
-export function MissionMap({ pointView, onPointAction }: MissionMapProps) {
+export function MissionMap({ sourceView, onSourceAction }: MissionMapProps) {
   const container = useRef<HTMLDivElement>(null);
   const mapRef = useRef<import('maplibre-gl').Map | null>(null);
-  const pointAdapterRef = useRef<ReturnType<typeof createMapPoints> | null>(null);
-  const pointViewRef = useRef(pointView);
-  const onPointActionRef = useRef(onPointAction);
+  const sourceAdapterRef = useRef<ReturnType<typeof createMapSource> | null>(null);
+  const sourceViewRef = useRef(sourceView);
+  const onSourceActionRef = useRef(onSourceAction);
   const [status, setStatus] = useState<MapStatus>('loading');
   const [moving, setMoving] = useState(false);
   const [camera, setCamera] = useState(initialCamera);
@@ -52,12 +52,12 @@ export function MissionMap({ pointView, onPointAction }: MissionMapProps) {
   const [longitude, setLongitude] = useState('');
   const [errors, setErrors] = useState<LocatorErrors>({ latitude: null, longitude: null });
 
-  pointViewRef.current = pointView;
-  onPointActionRef.current = onPointAction;
+  sourceViewRef.current = sourceView;
+  onSourceActionRef.current = onSourceAction;
 
   useEffect(() => {
-    pointAdapterRef.current?.sync(pointView);
-  }, [pointView]);
+    sourceAdapterRef.current?.sync(sourceView);
+  }, [sourceView]);
 
   useEffect(() => {
     let disposed = false;
@@ -69,8 +69,8 @@ export function MissionMap({ pointView, onPointAction }: MissionMapProps) {
       failed = true;
       const failedMap = map;
       map = null;
-      pointAdapterRef.current?.dispose();
-      pointAdapterRef.current = null;
+      sourceAdapterRef.current?.dispose();
+      sourceAdapterRef.current = null;
       if (failedMap !== null) {
         if (mapRef.current === failedMap) mapRef.current = null;
         failedMap.remove();
@@ -102,7 +102,7 @@ export function MissionMap({ pointView, onPointAction }: MissionMapProps) {
         map.keyboard.disableRotation();
         map.touchZoomRotate.disableRotation();
         const currentMap = map;
-        pointAdapterRef.current = createMapPoints(
+        sourceAdapterRef.current = createMapSource(
           {
             project: (coordinate) => currentMap.project(coordinate),
             unproject: (point) => currentMap.unproject(point),
@@ -118,8 +118,8 @@ export function MissionMap({ pointView, onPointAction }: MissionMapProps) {
               return () => currentMap.off('click', listener);
             },
           },
-          pointViewRef.current,
-          (action) => onPointActionRef.current(action),
+          sourceViewRef.current,
+          (action) => onSourceActionRef.current(action),
         );
 
         map.on('error', failMap);
@@ -155,8 +155,8 @@ export function MissionMap({ pointView, onPointAction }: MissionMapProps) {
 
     return () => {
       disposed = true;
-      pointAdapterRef.current?.dispose();
-      pointAdapterRef.current = null;
+      sourceAdapterRef.current?.dispose();
+      sourceAdapterRef.current = null;
       if (map !== null) {
         map.remove();
         if (mapRef.current === map) mapRef.current = null;

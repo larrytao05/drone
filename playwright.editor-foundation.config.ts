@@ -15,6 +15,8 @@ export default defineConfig({
     'deletion.spec.ts',
     'preview.spec.ts',
     'route-settings.spec.ts',
+    'source-tools.spec.ts',
+    'takeoff.spec.ts',
     'coordinate-source.spec.ts',
     'new-route.spec.ts',
     'layout-accessibility.spec.ts',
