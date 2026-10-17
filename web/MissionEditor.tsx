@@ -9,7 +9,7 @@ import type { LocalReadResult } from './draft-storage';
 import type { MissionDraft } from './editor';
 import type { DraftAnalysis } from './mission-input';
 import type { MapGeometry } from './map-geometry';
-import type { MapPointAction, MapPointView } from './map-points';
+import type { MapSourceAction, MapSourceView } from './map-source';
 import { Inspector } from './Inspector';
 import { ReviewDialog } from './ReviewDialog';
 import { RoutePreview } from './RoutePreview';
@@ -86,13 +86,15 @@ export function MissionEditor() {
     takeoff: analysis.takeoff,
     target: analysis.target,
   }), [analysis]);
-  const pointView = useMemo<MapPointView>(() => ({
+  const sourceView = useMemo<MapSourceView>(() => ({
     points: geometry.points,
     sourcePointIds: state.draft.points.map((point) => point.id),
     selectedPointId: state.selectedPointId,
     tool: state.tool,
     revision: state.revision,
-  }), [geometry.points, state.draft.points, state.revision, state.selectedPointId, state.tool]);
+    takeoff: geometry.takeoff,
+    target: geometry.target,
+  }), [geometry.points, geometry.takeoff, geometry.target, state.draft.points, state.revision, state.selectedPointId, state.tool]);
 
   useEffect(() => {
     setSlotStatus(readBrowserDraft().kind);
@@ -244,8 +246,8 @@ export function MissionEditor() {
             ))}
           </div>
           <MissionMap
-            onPointAction={(action: MapPointAction) => dispatch(action)}
-            pointView={pointView}
+            onSourceAction={(action: MapSourceAction) => dispatch(action)}
+            sourceView={sourceView}
           />
           <RoutePreview analysis={analysis} draft={state.draft} geometry={geometry} />
         </section>

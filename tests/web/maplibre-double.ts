@@ -116,6 +116,10 @@ export class Marker {
 
   constructor(readonly options: Readonly<{ element: HTMLButtonElement; anchor: 'center' }>) {}
 
+  getElement() {
+    return this.options.element;
+  }
+
   setLngLat(coordinate: readonly [number, number]) {
     this.coordinate = coordinate;
     return this;

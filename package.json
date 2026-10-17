@@ -24,6 +24,7 @@
     "test:e2e:lists": "playwright test --config playwright.editor-foundation.config.ts --grep 'pointer reordering|keyboard reordering|Escape and outside drops|100-point list|reviewed source before and after drop|deleting the selected row|deleting the final point'",
     "test:e2e:table": "playwright test --config playwright.editor-foundation.config.ts --grep 'read-only calculated table agrees|invalid route clears and restores|calculated polar rows remain|100-point calculated table|shared settings apply to all calculated points|framing branch changes start blank'",
     "test:e2e:settings": "playwright test --config playwright.editor-foundation.config.ts --grep 'shared settings apply to all calculated points|framing branch changes start blank|manual takeoff source|manual target source'",
+    "test:e2e:source-tools": "playwright test --config playwright.editor-foundation.config.ts tests/e2e/takeoff.spec.ts tests/e2e/route-settings.spec.ts tests/e2e/source-tools.spec.ts",
     "test:e2e:local-source": "playwright test --config playwright.editor-foundation.config.ts tests/e2e/coordinate-source.spec.ts tests/e2e/new-route.spec.ts tests/e2e/layout-accessibility.spec.ts",
     "test:e2e:foundation:prod": "npm run build:web && FOUNDATION_SERVER_MODE=production playwright test --config playwright.foundation.config.ts",
     "typecheck:editor-tests": "tsc --noEmit -p tsconfig.editor-tests.json",
