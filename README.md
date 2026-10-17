@@ -2,13 +2,23 @@ This project builds an LLM-powered flight planner for a DJI drone.
 
 # System design
 
-Status: proposed application design with a deterministic waypoint planner implemented in `src/core.ts`, 10 October 2026. The planner validates route and orbit requests and returns waypoint values or structured input issues. The editor, interpretation endpoint and flight-file export remain proposed. The separate KMZ round-trip experiment remains unchanged.
+This project is developing a mission planner for DJI drones. It does not control an aircraft.
 
-## Browser foundation commands
+Status: the deterministic planner in `src/core.ts` and a partial local route editor are implemented. Full Stage 2 remains incomplete; the broader system design below remains proposed. The separate KMZ round-trip experiment remains unchanged.
 
-The current browser page runs temporary fixed-route, face-target and invalid-route checks through the public planner package. No map key or external account is required.
+## Current route editor
 
-Install dependencies and the Chromium test browser, then start the local page:
+The browser editor supports route source fields, map-based waypoint creation, marker selection and dragging, manual takeoff and target coordinates, shared height and framing settings, waypoint reordering and deletion, and a nominal calculated-waypoint table. You can also import a versioned JSON source backup to populate the waypoint list.
+
+The map area uses a native MapLibre canvas with a local background style, pan and zoom, a coordinate locator, waypoint markers and map-based point editing. The canvas is blank: imagery is not connected, and it makes no external map requests. Satellite or hybrid imagery and provider attribution are not implemented; live imagery and provider authentication have not been verified.
+
+Save opens a native review dialog and writes one draft slot to the current browser's `localStorage` only after you confirm. Load reads that slot only when you select Load. The editor does not autosave or load a draft at startup. Storage stays in that browser profile and does not sync across devices.
+
+Export backup downloads a versioned JSON file containing source fields only. It does not include review status or calculated results. Importing a backup changes the current source and requires a fresh review. Import does not replace the saved local slot.
+
+## Run the local editor
+
+Install dependencies and the Chromium test browser, then start the app:
 
 ```sh
 npm ci
@@ -16,17 +26,35 @@ npx playwright install chromium
 npm run dev:web
 ```
 
-The page opens at `http://localhost:3000`. Restart the development command after changing planner source to rebuild its package.
+Open `http://localhost:3000`. To populate the waypoint list, select Import backup and choose a versioned route backup.
 
-Run `npm run test:e2e:foundation` for the development browser checks. Run `npm run test:e2e:foundation:prod` to build the production application and run the same checks. Each command starts and stops its own server on port 3101 or 3102 and rejects an occupied port. The checks compare every waypoint field, exercise errors and result changes, and calculate while browser network access is disabled. Only Chromium has been verified.
+## Run checks
 
-Run `npm run typecheck:web`, `npm run typecheck:editor-tests`, `npm test` and `npm run lint` for compilation, test types, planner tests and lint.
+Run `npm run test:web` for editor component tests and `npm test` for planner tests. Run `npm run typecheck`, `npm run typecheck:web`, `npm run typecheck:editor-tests` and `npm run lint` for the corresponding TypeScript checks and lint. Run `npm run build:web` to build the web app.
 
-The 14 editor unit suites and 53 editor browser journeys await the full editor implementation. `npm run test:web` selects those unit suites. `npm run test:e2e -- --list` lists the editor journeys without starting a server. The full `test:e2e` command expects editor servers already running at ports 3000 and 3001. The focused foundation commands run 4 separate browser checks.
+The focused browser commands start and stop their own servers:
 
-## Product and first scope
+| Command | Checks | Managed port |
+| --- | --- | --- |
+| `npm run test:e2e:foundation` | Development shell checks | 3101 |
+| `npm run test:e2e:foundation:prod` | Production shell checks | 3102 |
+| `npm run test:e2e:persistence` | Save, review, Load and import journeys | 3103 |
+| `npm run test:e2e:backup-foundation` | Backup download and import journeys | 3103 |
+| `npm run test:e2e:lists` | Waypoint reorder and delete journeys | 3103 |
+| `npm run test:e2e:table` | Calculated table and route settings journeys | 3103 |
+| `npm run test:e2e:settings` | Manual takeoff, target and route settings journeys | 3103 |
+| `npm run test:e2e:local-source` | Imported coordinate editing, New and layout/accessibility journeys | 3103 |
+| `npm run test:e2e:map-local` | Native local canvas, locator, pan/zoom and local worker | 3103 |
+| `npm run test:e2e:map-local:prod` | Production native local canvas and worker | 3104 |
+| `npm run test:e2e:points` | Native point creation, selection, coordinate editing and drag | 3103 |
 
-Build a web app hosted on Vercel that turns a filming or photography request into an editable mission plan for a DJI Mavic 4 Pro with a DJI RC Pro 2. A large language model (LLM) interprets the request. Geometry code calculates waypoints and camera angles. The operator reviews the result and supervises execution in DJI Fly.
+`npm run test:e2e -- --list` lists the default browser tests without starting a server. The full `npm run test:e2e` suite does not start its servers. It expects the main app on port 3000 and a no-map app on port 3001 by default. The full suite still includes journeys for map imagery, attribution and later map interactions that are not implemented.
+
+Only Chromium is configured for browser checks. The focused local editor checks do not verify live map imagery or provider authentication.
+
+## Proposed product scope
+
+The proposed web app, hosted on Vercel, turns a filming or photography request into an editable mission plan for a DJI Mavic 4 Pro with a DJI RC Pro 2. A large language model (LLM) interprets the request. Geometry code calculates waypoints and camera angles. The operator reviews the result and supervises execution in DJI Fly.
 
 The first version supports 2 mission types:
 
@@ -75,9 +103,9 @@ Store named latitude and longitude fields in degrees using the World Geodetic Sy
 
 Every height uses `heightAboveTakeoffM`. This is a vertical offset from the planned takeoff elevation. It is not height above the ground at each waypoint. A different actual takeoff location or elevation requires a new plan and review. Version 1 has no terrain conversion or terrain following.
 
-### How we supply map and camera information
+### Planned map and camera information
 
-Use Mapbox GL JS with a satellite style as the initial map choice. The browser displays imagery and overlays the selected points, boundaries, route and camera directions. The operator identifies the subject and supplies its height. Mapbox provides satellite map styles; imagery is background context, not a current survey of obstacles. [Mapbox style documentation](https://docs.mapbox.com/mapbox-gl-js/guides/styles/set-a-style/)
+The approved map design uses MapLibre GL JS with MapTiler's hybrid-v4 style. Provider requests and use of a public map key are pending explicit human approval. The current app displays a local native canvas with a plain background and makes no MapTiler requests. It has not verified live imagery or provider authentication. `NEXT_PUBLIC_MAPTILER_API_KEY` is the planned variable name, but current source does not read it. When implemented, map imagery will provide background context, not a current survey of obstacles.
 
 The LLM receives selected object IDs, their roles, shot parameters and allowed bounds. It does not need satellite pixels or coordinates to interpret "orbit target A clockwise". The local planner already has target A's location. Free text still goes to the model provider and may contain location information supplied by the operator.
 
@@ -116,8 +144,8 @@ Keep mission state and planning in the browser. Use a small Vercel function for 
 
 ```mermaid
 flowchart TD
-    Operator[Operator: map selections and shot request] --> Editor[Browser mission editor]
-    Map[Satellite map service] --> Editor
+    Operator[Operator: map selections and shot request] --> Editor[Proposed browser mission editor]
+    Map[Approved map provider plan, not yet connected] --> Editor
     Editor --> Request[Protected Vercel interpretation endpoint]
     Request --> Model[LLM provider]
     Model --> Proposal[Structured intent or questions]
@@ -139,16 +167,16 @@ flowchart TD
 | Component | Choice | Responsibility |
 | --- | --- | --- |
 | Web app | Next.js, React and TypeScript on Vercel | Forms, map, preview, review and downloads |
-| Map | Mapbox GL JS | Satellite background and visual overlays |
+| Map | MapLibre GL JS with MapTiler hybrid-v4 | Planned satellite and hybrid background with visual overlays; provider requests await explicit approval |
 | Mission domain | Local TypeScript module | Input validation, geometry, actions, revisions, review and export eligibility |
-| Local persistence | IndexedDB | Saved mission branches; JSON provides portable backups |
+| Local persistence | One `localStorage` draft slot in the current editor; IndexedDB remains proposed | Explicit local Save and Load; source-only JSON backups |
 | Interpretation | Next.js route handler using the Node.js runtime | Protected, bounded model request and schema validation |
 | Model | One provider with structured output support, selected before implementation | Interpret intent and request clarification |
 | Access | Vercel Authentication with All Deployments protection | Restrict the initial app and endpoint to the owner's project access |
 | Usage counters | Small managed Redis store, proposed [Upstash](https://upstash.com/docs/redis/features/restapi) | Atomic daily request quota and concurrent-request limit |
 | DJI exporter | Private module inside the mission domain | Profile-specific encoding after compatibility validation |
 
-Mapbox needs an account and a public browser token with limited scopes and allowed URLs. URL restrictions reduce misuse but are a best-effort control. Keep model and Redis credentials on the server. Next.js exposes `NEXT_PUBLIC_` variables to the browser. [Mapbox token guidance](https://docs.mapbox.com/accounts/guides/tokens/), [Next.js data security](https://nextjs.org/docs/app/guides/data-security)
+The planned map integration will need a public browser key. Keep model and Redis credentials on the server. Next.js exposes `NEXT_PUBLIC_` variables to the browser. [Next.js data security](https://nextjs.org/docs/app/guides/data-security)
 
 Vercel currently supports All Deployments authentication on all plans, including production URLs. Enable it explicitly, restrict project access and avoid public bypasses. Confirm unauthenticated requests to the paid endpoint fail before enabling the provider key. Public GitHub source does not require public access to the running planner. [Vercel deployment protection](https://vercel.com/docs/deployment-protection)
 
@@ -156,7 +184,7 @@ The endpoint, `POST /api/interpret`, accepts small structured requests, checks t
 
 Vercel limits function request and response bodies to 4.5MB. Our proposed endpoint cap is 64KB, with a 4,000-character objective. Keep imagery out of this request. Do not use function memory or its filesystem as durable mission or quota storage. [Vercel function limits](https://vercel.com/docs/functions/limitations)
 
-Log request IDs, timings, outcome codes and usage. Exclude raw objectives and coordinates from application logs. Mission data stays in the browser; map requests still reveal the viewed area to the map service. Model inference requires connectivity. Local editing and geometry can continue after the app loads, but offline satellite maps are not promised.
+Log request IDs, timings, outcome codes and usage. Exclude raw objectives and coordinates from application logs. The proposed mission data stays in the browser. When map requests are enabled, the provider receives the viewed area. Model inference requires connectivity. Local editing and geometry can continue after the app loads, but offline satellite maps are not promised.
 
 ## Domain and interface sketch
 
@@ -318,4 +346,4 @@ Local planning and JSON work can proceed while flight-file compatibility remains
 | Model provider, model, map account and usage budget | Inference and deployment |
 | Operator's numeric flight limits and selected lens | Each complete mission |
 
-Implementation reconciliation: stage 1 implements local waypoint planning only. It does not add the editor, interpretation service, persistence, camera actions, mission review or flight-file export. The separate KMZ evidence above remains limited to the recorded unchanged mission and version tuple.
+Implementation reconciliation: the repository includes a deterministic route and orbit planner and a partial local route editor. The editor supports manual source fields, waypoint list editing, a calculated table, explicit local Save and Load, native review, and source-only JSON backups. Its blank local map supports point creation, selection and dragging, but does not connect imagery. Orbit editing in the browser, LLM interpretation and DJI flight-file export are not implemented. The separate KMZ evidence above remains limited to the recorded unchanged mission and version tuple.

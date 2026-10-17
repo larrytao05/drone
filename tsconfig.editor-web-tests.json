@@ -1,0 +1,19 @@
+{
+  "extends": "./tsconfig.web.json",
+  "compilerOptions": {
+    "types": ["node", "vitest/globals"]
+  },
+  "include": [
+    "app/**/*.ts",
+    "app/**/*.tsx",
+    "web/**/*.ts",
+    "web/**/*.tsx",
+    "tests/web/**/*.test.ts",
+    "tests/web/**/*.test.tsx"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist",
+    "tests/e2e"
+  ]
+}

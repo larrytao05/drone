@@ -1,12 +1,12 @@
 import { expect, test } from '@playwright/test';
-import { draftFixture, importDraft, openBlankEditor, rows } from './editor-helpers.js';
+import { draftFixture, importDraft, openBlankEditor, rows, selectWaypoint } from './editor-helpers.js';
 
 for (const width of [1024, 320]) {
   test(`persistent list-first inspector fits a ${width}px viewport`, async ({ page }) => {
     await page.setViewportSize({ width, height: 900 });
     await openBlankEditor(page);
     await importDraft(page, draftFixture());
-    await rows(page).nth(0).click();
+    await selectWaypoint(page, 1).click();
     const settings = page.getByRole('region', { name: 'Route settings' });
     const list = page.getByRole('region', { name: 'Waypoints' });
     const selected = page.getByRole('region', { name: 'Selected waypoint' });

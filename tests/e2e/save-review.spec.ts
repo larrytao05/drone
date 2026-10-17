@@ -27,6 +27,12 @@ test('saves an eligible review once and restores the saved reviewed source expli
   await expect(saveStatus).toHaveText(/^saved$/i);
   await expect(page.getByRole('status', { name: 'Review status' })).toHaveText(/^reviewed$/i);
 
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  const alreadyReviewed = page.getByRole('dialog').getByRole('checkbox', { name: 'Mark as reviewed' });
+  await expect(alreadyReviewed).toBeChecked();
+  await page.getByRole('dialog').getByRole('button', { name: 'Cancel' }).click();
+  await expect(page.getByRole('status', { name: 'Review status' })).toHaveText(/^reviewed$/i);
+
   await page.reload();
   await expect(page.getByRole('textbox', { name: 'Route name' })).toHaveValue('');
   await page.getByRole('button', { name: 'Load' }).click();
@@ -66,6 +72,14 @@ test('a failed local write leaves the dialog open and does not acknowledge saved
   await expect(page.getByRole('textbox', { name: 'Route name' })).toHaveValue('Unsaved draft');
   await page.getByRole('textbox', { name: 'Route name' }).fill('Saved baseline');
   await expect(saveStatus).toHaveText(/^saved$/i);
+  await page.getByRole('textbox', { name: 'Route name' }).fill('Retry this save');
+  await page.evaluate(() => Reflect.set(window, '__rejectDraftWrites', false));
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  const retryDialog = page.getByRole('dialog');
+  await retryDialog.getByRole('button', { name: 'Confirm' }).click();
+  await expect(retryDialog).toBeHidden();
+  await expect(saveStatus).toHaveText(/^saved$/i);
+  await expect(page.getByRole('status', { name: 'Review status' })).toHaveText(/^not reviewed$/i);
 });
 
 test('the review dialog contains keyboard focus and returns it to Save', async ({ page }) => {
@@ -76,11 +90,38 @@ test('the review dialog contains keyboard focus and returns it to Save', async (
   const dialog = page.getByRole('dialog');
   for (let index = 0; index < 8; index += 1) {
     await page.keyboard.press('Tab');
-    expect(await dialog.evaluate((element) => element.contains(document.activeElement))).toBe(true);
+    const focusedElement = await page.evaluate(() => {
+      const active = document.activeElement;
+      return active instanceof HTMLElement ? active.outerHTML : String(active);
+    });
+    expect(await dialog.evaluate((element) => element.contains(document.activeElement)), `After Tab ${index + 1}, focus was on ${focusedElement}`).toBe(true);
   }
+  await page.keyboard.press('Shift+Tab');
+  await expect(dialog.getByRole('button', { name: 'Confirm' })).toBeFocused();
   await page.keyboard.press('Escape');
   await expect(dialog).toBeHidden();
   await expect(save).toBeFocused();
+});
+
+test('review dialog remains usable at a narrow viewport', async ({ page }) => {
+  await openBlankEditor(page);
+  await importDraft(page, draftFixture());
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  const dialog = page.getByRole('dialog');
+  await expect(dialog).toBeVisible();
+  await page.screenshot({ path: '/private/tmp/drone-stage2-s2-11-review-desktop.png' });
+  await dialog.getByRole('button', { name: 'Cancel' }).click();
+
+  await page.setViewportSize({ width: 320, height: 740 });
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(dialog).toBeVisible();
+  await page.screenshot({ path: '/private/tmp/drone-stage2-s2-11-review-narrow.png' });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(320);
+  await dialog.getByRole('button', { name: 'Cancel' }).click();
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await page.getByRole('dialog').getByRole('button', { name: 'Confirm' }).click();
+  await expect(page.getByRole('dialog')).toBeHidden();
+  await expect(page.getByRole('status', { name: 'Save status' })).toHaveText(/^saved$/i);
 });
 
 test('a delayed import invalidates a captured Save snapshot before any write', async ({ page }) => {

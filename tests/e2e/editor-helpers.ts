@@ -67,6 +67,10 @@ export function rows(page: Page): Locator {
   return page.getByRole('region', { name: 'Waypoints' }).getByRole('listitem');
 }
 
+export function selectWaypoint(page: Page, ordinal: number): Locator {
+  return page.getByRole('button', { name: `Select waypoint ${ordinal}`, exact: true });
+}
+
 export function mapRegion(page: Page): Locator {
   return page.getByRole('region', { name: 'Mission map' });
 }

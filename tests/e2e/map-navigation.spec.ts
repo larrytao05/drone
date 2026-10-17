@@ -1,6 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { expect, test, type Page } from '@playwright/test';
-import { draftFixture, importDraft, locate, mapRegion, openBlankEditor, rows } from './editor-helpers.js';
+import { draftFixture, importDraft, locate, mapRegion, openBlankEditor, rows, selectWaypoint } from './editor-helpers.js';
 
 async function backup(page: Page): Promise<unknown> {
   const pending = page.waitForEvent('download');
@@ -45,7 +45,7 @@ test('invalid locator input stays editable and does not change mission source', 
 async function assertUsableWithoutMap(page: Page) {
   await importDraft(page, draftFixture());
   await expect(page.getByRole('status', { name: 'Map status' })).toHaveText(/unavailable|error|failed|missing/i);
-  await rows(page).nth(0).click();
+  await selectWaypoint(page, 1).click();
   await page.getByRole('textbox', { name: 'Selected latitude' }).fill('37.8');
   await expect(page.getByRole('table', { name: 'Calculated waypoints' }).locator('tbody tr')).toHaveCount(2);
   await page.getByRole('button', { name: 'Save', exact: true }).click();

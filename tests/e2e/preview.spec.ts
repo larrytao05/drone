@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { planMission } from '../../src/index.js';
-import { coordinateFields, draftFixture, importDraft, mapRegion, openBlankEditor, rows } from './editor-helpers.js';
+import { coordinateFields, draftFixture, importDraft, mapRegion, openBlankEditor, rows, selectWaypoint } from './editor-helpers.js';
 
 test('the read-only calculated table agrees with the real face-target planner', async ({ page }) => {
   const draft = draftFixture({ framing: { kind: 'face-target', coordinate: { latitude: '37.776', longitude: '-122.419' }, height: '10' } });
@@ -21,6 +21,64 @@ test('the read-only calculated table agrees with the real face-target planner', 
     }
   }
   await expect(page.getByText(/nominal/i).first()).toBeVisible();
+});
+
+test('invalid route clears and restores the current calculated table', async ({ page }) => {
+  await openBlankEditor(page);
+  await importDraft(page, draftFixture());
+  const table = page.getByRole('table', { name: 'Calculated waypoints' });
+  const calculated = table.locator('tbody tr');
+  await expect(calculated).toHaveCount(2);
+
+  await page.getByRole('textbox', { name: 'Height above takeoff' }).fill('-');
+  await expect(calculated).toHaveCount(0);
+  await expect(rows(page)).toHaveCount(2);
+
+  await page.getByRole('textbox', { name: 'Height above takeoff' }).fill('55');
+  await expect(calculated).toHaveCount(2);
+  for (const index of [0, 1]) {
+    await expect(async () => {
+      const values = (await calculated.nth(index).getByRole('cell').allTextContents()).map(Number);
+      expect(values).toContain(55);
+    }).toPass({ timeout: 5000 });
+  }
+});
+
+test('calculated polar rows remain in the table while the map omission is explained', async ({ page }) => {
+  const draft = draftFixture();
+  await openBlankEditor(page);
+  await importDraft(page, {
+    ...draft,
+    points: [
+      { ...draft.points[0], coordinate: { latitude: '90', longitude: '0' } },
+      { ...draft.points[1], coordinate: { latitude: '80', longitude: '1' } },
+    ],
+  });
+
+  const table = page.getByRole('table', { name: 'Calculated waypoints' });
+  const calculated = table.locator('tbody tr');
+  await expect(calculated).toHaveCount(2);
+  await expect(calculated.nth(0).getByRole('cell').nth(1)).toHaveText('90');
+  await expect(calculated.nth(1).getByRole('cell').nth(1)).toHaveText('80');
+  await expect(rows(page)).toHaveCount(2);
+  await expect(page.getByRole('note')).toContainText(/polar waypoint is kept in the route table/i);
+});
+
+test('a 100-point calculated table stays inside a narrow viewport', async ({ page }) => {
+  const draft = draftFixture();
+  const points = Array.from({ length: 100 }, (_, index) => ({
+    id: `${String(index + 1).padStart(8, '0')}-1111-4111-8111-${String(index + 1).padStart(12, '0')}`,
+    coordinate: { latitude: String(37 + index / 1000), longitude: '-122' },
+  }));
+  await openBlankEditor(page);
+  await page.setViewportSize({ width: 320, height: 740 });
+  await importDraft(page, { ...draft, points });
+
+  const table = page.getByRole('table', { name: 'Calculated waypoints' });
+  await expect(table.locator('tbody tr')).toHaveCount(100);
+  await expect(table.locator('tbody tr').nth(0).getByRole('cell').nth(1)).toHaveText('37');
+  await expect(table.locator('tbody tr').nth(99).getByRole('cell').nth(1)).toHaveText('37.099');
+  expect(await page.locator('body').evaluate((body) => body.scrollWidth <= window.innerWidth)).toBe(true);
 });
 
 test('incomplete input removes calculated rows and heading indicators, then recovers current values', async ({ page }) => {
@@ -46,7 +104,7 @@ test('polar coordinates remain exact and editable even when their map marker is 
   const draft = draftFixture();
   await openBlankEditor(page);
   await importDraft(page, { ...draft, points: [{ ...draft.points[0], coordinate: { latitude: '90', longitude: '0' } }, { ...draft.points[1], coordinate: { latitude: '80', longitude: '1' } }] });
-  await rows(page).nth(0).click();
+  await selectWaypoint(page, 1).click();
   await expect(coordinateFields(page).latitude).toHaveValue('90');
   await expect(mapRegion(page).getByRole('button', { name: 'Waypoint 1', exact: true })).toHaveCount(0);
   await expect(page.getByRole('table', { name: 'Calculated waypoints' }).locator('tbody tr')).toHaveCount(2);
