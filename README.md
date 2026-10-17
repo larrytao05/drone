@@ -10,7 +10,9 @@ Status: the deterministic planner in `src/core.ts` and a partial local route edi
 
 The browser editor supports route source fields, map-based waypoint creation, marker selection and dragging, manual takeoff and target coordinates, shared height and framing settings, waypoint reordering and deletion, and a nominal calculated-waypoint table. You can also import a versioned JSON source backup to populate the waypoint list.
 
-The map area uses a native MapLibre canvas with a local background style, pan and zoom, a coordinate locator, waypoint markers and map-based point editing. The canvas is blank: imagery is not connected, and it makes no external map requests. Satellite or hybrid imagery and provider attribution are not implemented; live imagery and provider authentication have not been verified.
+The map area uses a native MapLibre canvas with a local background style, pan and zoom, a coordinate locator, waypoint markers and map-based point editing. It shows takeoff and target markers when those coordinates are set. The preview draws the calculated route as GeoJSON line features and shows directional camera-heading markers. These are nominal planner values, not imagery or a live view of the site.
+
+The local map canvas is blank. It makes no external map requests and has no provider imagery, provider authentication or provider attribution. The planned `NEXT_PUBLIC_MAPTILER_API_KEY` variable is not read by current source.
 
 Save opens a native review dialog and writes one draft slot to the current browser's `localStorage` only after you confirm. Load reads that slot only when you select Load. The editor does not autosave or load a draft at startup. Storage stays in that browser profile and does not sync across devices.
 
@@ -47,10 +49,14 @@ The focused browser commands start and stop their own servers:
 | `npm run test:e2e:map-local` | Native local canvas, locator, pan/zoom and local worker | 3103 |
 | `npm run test:e2e:map-local:prod` | Production native local canvas and worker | 3104 |
 | `npm run test:e2e:points` | Native point creation, selection, coordinate editing and drag | 3103 |
+| `npm run test:e2e:editor-local` | All managed local editor journeys, including existing review, backup, editing and map journeys | 3103 |
+| `npm run test:e2e:editor-local:prod` | The same managed journeys against a production build | 3104 |
+| `npm run test:e2e:map-fallback` | Invalid locator and WebGL-failure journeys only | 3103 |
+| `npm run test:e2e:map-fallback:prod` | The same fallback journeys against a production build | 3104 |
 
-`npm run test:e2e -- --list` lists the default browser tests without starting a server. The full `npm run test:e2e` suite does not start its servers. It expects the main app on port 3000 and a no-map app on port 3001 by default. The full suite still includes journeys for map imagery, attribution and later map interactions that are not implemented.
+`npm run test:e2e -- --list` lists the default browser tests without starting a server. The full `npm run test:e2e` suite does not start its servers. It expects the main app on port 3000 and a no-map app on port 3001 by default. The full suite still includes provider-era map journeys that are not part of the managed local checks. The focused fallback commands select only invalid-locator and WebGL-failure journeys from `map-navigation.spec.ts`. Provider navigation, attribution, tile-failure and missing-key assertions remain unverified until provider integration is approved and implemented.
 
-Only Chromium is configured for browser checks. The focused local editor checks do not verify live map imagery or provider authentication.
+Only Chromium is configured for browser checks. Managed local checks verify the blank local map and editor behaviour. They do not verify provider imagery, authentication or attribution.
 
 ## Proposed product scope
 

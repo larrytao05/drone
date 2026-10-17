@@ -13,5 +13,5 @@
     "skipLibCheck": true,
     "noEmit": true
   },
-  "include": ["playwright.config.ts", "playwright.foundation.config.ts", "playwright.editor-foundation.config.ts", "tests/e2e/**/*.ts"]
+  "include": ["playwright.config.ts", "playwright.foundation.config.ts", "playwright.editor-foundation.config.ts", "playwright.editor-fallback.config.ts", "tests/e2e/**/*.ts"]
 }
