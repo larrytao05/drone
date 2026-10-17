@@ -1,3 +1,4 @@
+import { mkdir } from 'node:fs/promises';
 import { expect, test } from '@playwright/test';
 import { planMission } from '../../src/index.js';
 import { coordinateFields, draftFixture, importDraft, mapRegion, openBlankEditor, rows, selectWaypoint } from './editor-helpers.js';
@@ -98,6 +99,37 @@ test('incomplete input removes calculated rows and heading indicators, then reco
     const values = (await calculated.nth(index).getByRole('cell').allTextContents()).map(Number);
     expect(values).toContain(55);
   }).toPass({ timeout: 5000 });
+});
+
+test('native route line and heading markers render without covering source points', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await openBlankEditor(page);
+  await importDraft(page, draftFixture());
+  const map = mapRegion(page);
+  await expect(page.getByRole('status', { name: 'Map status' })).toContainText('Map ready');
+
+  const headings = map.locator('.mission-heading-marker');
+  await expect(headings).toHaveCount(2);
+  const firstHeading = headings.first();
+  const firstHeadingHandle = await firstHeading.elementHandle();
+  if (firstHeadingHandle === null) throw new Error('The first calculated heading must render');
+  const headingTransform = () => firstHeading.evaluate((element) => element.style.transform);
+  const initialTransform = await headingTransform();
+  const headingBox = await firstHeading.boundingBox();
+  const pointBox = await map.getByRole('button', { name: 'Waypoint 1', exact: true }).boundingBox();
+  if (headingBox === null || pointBox === null) throw new Error('The calculated heading and source point must be visible');
+  expect(headingBox.x + headingBox.width <= pointBox.x
+    || pointBox.x + pointBox.width <= headingBox.x
+    || headingBox.y + headingBox.height <= pointBox.y
+    || pointBox.y + pointBox.height <= headingBox.y).toBe(true);
+
+  await page.getByRole('textbox', { name: 'Heading', exact: true }).fill('180');
+  await expect.poll(headingTransform).not.toBe(initialTransform);
+  expect(await headings.first().evaluate((element, previous) => element === previous, firstHeadingHandle)).toBe(true);
+  await expect(headings.first()).toHaveAttribute('aria-label', 'Camera heading for waypoint 1');
+
+  await mkdir('/private/tmp/drone-stage2-s2-09-shots', { recursive: true });
+  await page.screenshot({ path: '/private/tmp/drone-stage2-s2-09-shots/native-route.png', fullPage: true });
 });
 
 test('polar coordinates remain exact and editable even when their map marker is omitted', async ({ page }) => {

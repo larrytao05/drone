@@ -14,6 +14,13 @@ type MapOptions = Readonly<{
 }>;
 
 type CameraOptions = Readonly<{ center: readonly [number, number]; duration: number }>;
+type MarkerOptions = Readonly<{
+  element: HTMLDivElement | HTMLButtonElement;
+  anchor: 'center';
+  offset?: readonly [number, number];
+  rotation?: number;
+  rotationAlignment?: 'map' | 'viewport' | 'auto';
+}>;
 type MapEvent = Readonly<{ lngLat: Readonly<{ lat: number; lng: number }>; originalEvent: MouseEvent }>;
 type Listener = (event?: MapEvent) => void;
 
@@ -24,9 +31,12 @@ export class FakeMap {
   readonly controls: unknown[] = [];
   readonly controlPositions: string[] = [];
   readonly handlers = new globalThis.Map<string, Listener[]>();
+  readonly sources = new globalThis.Map<string, { type: string; data: unknown; setData(data: unknown): void }>();
+  readonly layers = new globalThis.Map<string, unknown>();
   center: readonly [number, number];
   zoom: number;
   removeCount = 0;
+  removeSnapshot: Readonly<{ sources: readonly string[]; layers: readonly string[]; headings: number }> | null = null;
 
   constructor(options: MapOptions) {
     if (throwOnConstruction) throw new Error('WebGL is unavailable');
@@ -35,7 +45,7 @@ export class FakeMap {
     this.zoom = options.zoom ?? 0;
     options.container.append(this.canvas);
     instances.push(this);
-    queueMicrotask(() => this.emit('load'));
+    if (!deferLoad) queueMicrotask(() => this.emit('load'));
   }
 
   readonly keyboard = {
@@ -86,6 +96,39 @@ export class FakeMap {
     return this;
   }
 
+  addSource(id: string, source: { type: string; data: unknown }) {
+    this.sources.set(id, {
+      ...source,
+      setData(data: unknown) {
+        this.data = data;
+      },
+    });
+    return this;
+  }
+
+  getSource(id: string) {
+    return this.sources.get(id);
+  }
+
+  removeSource(id: string) {
+    this.sources.delete(id);
+    return this;
+  }
+
+  addLayer(layer: { id: string }) {
+    this.layers.set(layer.id, layer);
+    return this;
+  }
+
+  getLayer(id: string) {
+    return this.layers.get(id);
+  }
+
+  removeLayer(id: string) {
+    this.layers.delete(id);
+    return this;
+  }
+
   getCenter() {
     return { lng: this.center[0], lat: this.center[1] };
   }
@@ -103,6 +146,11 @@ export class FakeMap {
 
   remove() {
     this.removeCount += 1;
+    this.removeSnapshot = {
+      sources: [...this.sources.keys()],
+      layers: [...this.layers.keys()],
+      headings: this.options.container.querySelectorAll('.mission-heading-marker').length,
+    };
     this.canvas.remove();
   }
 }
@@ -113,8 +161,12 @@ export class NavigationControl {
 
 export class Marker {
   coordinate: readonly [number, number] = [0, 0];
+  rotation: number;
 
-  constructor(readonly options: Readonly<{ element: HTMLButtonElement; anchor: 'center' }>) {}
+  constructor(readonly options: MarkerOptions) {
+    this.rotation = options.rotation ?? 0;
+    allMarkers.push(this);
+  }
 
   getElement() {
     return this.options.element;
@@ -122,6 +174,11 @@ export class Marker {
 
   setLngLat(coordinate: readonly [number, number]) {
     this.coordinate = coordinate;
+    return this;
+  }
+
+  setRotation(rotation: number) {
+    this.rotation = rotation;
     return this;
   }
 
@@ -136,11 +193,15 @@ export class Marker {
 }
 
 const instances: FakeMap[] = [];
+const allMarkers: Marker[] = [];
 let throwOnConstruction = false;
+let deferLoad = false;
 
 export function resetMaplibreDouble() {
   instances.length = 0;
+  allMarkers.length = 0;
   throwOnConstruction = false;
+  deferLoad = false;
   configuredWorkerUrl = null;
 }
 
@@ -148,8 +209,16 @@ export function failMapConstruction() {
   throwOnConstruction = true;
 }
 
+export function deferMapLoad() {
+  deferLoad = true;
+}
+
 export function createdMaps(): readonly FakeMap[] {
   return instances;
+}
+
+export function createdMarkers(): readonly Marker[] {
+  return allMarkers;
 }
 
 export { FakeMap as Map };

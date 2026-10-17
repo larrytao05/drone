@@ -6,7 +6,7 @@ const MAX_MERCATOR_LATITUDE = 85.0511287798066;
 export type MapGeometry = Readonly<{
   points: readonly Readonly<{ id: string; coordinate: Coordinate }>[];
   lines: readonly (readonly Coordinate[])[];
-  headings: readonly Readonly<{ coordinate: Coordinate; headingDeg: number }>[];
+  headings: readonly Readonly<{ coordinate: Coordinate; headingDeg: number; waypointOrdinal: number }>[];
   omittedPointIds: readonly string[];
   takeoff: Coordinate | null;
   target: Coordinate | null;
@@ -117,9 +117,9 @@ export function buildMapGeometry({ sourcePoints, route, takeoff, target }: Build
     .filter(({ coordinate }) => !isProjectable(coordinate))
     .map(({ id }) => id);
   const planned = route.kind === 'calculated' ? route.waypoints : [];
-  const headings = planned.flatMap(({ coordinate, headingDeg }) => {
+  const headings = planned.flatMap(({ coordinate, headingDeg }, index) => {
     const mapPoint = mapCoordinate(coordinate);
-    return mapPoint === null ? [] : [{ coordinate: mapPoint, headingDeg }];
+    return mapPoint === null ? [] : [{ coordinate: mapPoint, headingDeg, waypointOrdinal: index + 1 }];
   });
 
   return {
