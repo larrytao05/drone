@@ -33,6 +33,15 @@ export default tseslint.config(
     }
   },
   {
+    files: ["web/server/chat-handler.ts"],
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        { patterns: ["**/core.js", "**/core.ts", "**/core"] }
+      ]
+    }
+  },
+  {
     ignores: ["dist/**", ".next/**", ".next-map-*/**", "next-env.d.ts", "node_modules/**", "playwright-report/**", "test-results/**", "public/maplibre-gl-worker.mjs"]
   }
 );

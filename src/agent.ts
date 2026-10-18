@@ -2,19 +2,13 @@ import { randomUUID } from "node:crypto";
 import { types } from "node:util";
 import { generateText, stepCountIs, tool, type LanguageModel } from "ai";
 import { z } from "zod";
+import { agentBindingSchema, agentHistorySchema, agentMessageSchema, type AgentActivity, type AgentBinding } from "./agent-contract.js";
 
 type ModelData = z.infer<ReturnType<typeof z.json>>;
 
-export const agentBindingSchema = z.strictObject({
-  missionBranchId: z.string().min(1).max(128), revision: z.number().int().nonnegative(),
-  inputDigest: z.string().min(1).max(128), schemaVersion: z.string().min(1).max(64),
-  plannerVersion: z.string().min(1).max(64),
-});
-export type AgentBinding = z.infer<typeof agentBindingSchema>;
-const textSchema = z.string().trim().min(1).max(4_000);
 const inputSchema = z.strictObject({
-  message: textSchema,
-  history: z.array(z.strictObject({ role: z.enum(["user", "assistant"]), content: textSchema })).max(12).default([]),
+  message: agentMessageSchema,
+  history: agentHistorySchema,
   binding: agentBindingSchema,
 });
 const limitsSchema = z.strictObject({
@@ -23,7 +17,6 @@ const limitsSchema = z.strictObject({
   deadlineMs: z.number().int().min(1).max(30_000).default(30_000),
 });
 type ToolName = "get_mission_context" | "preview_change" | "propose_change" | "ask_clarification";
-export type AgentActivity = { tool: ToolName; status: "started" | "succeeded" | "rejected" };
 export type AgentPreview<Candidate> =
   | { kind: "valid"; candidate: Candidate; summary: unknown }
   | { kind: "invalid"; diagnostics: unknown };
@@ -193,7 +186,7 @@ export async function runAgentTurn<Snapshot, Change, Candidate>(
     if (run.state.kind !== "running") return { ...run.state, activity: [...activity] };
     if (!result) return { kind: "failed", activity: [...activity] };
     if (result.steps.at(-1)?.toolCalls.length) return { kind: "budget-exceeded", activity: [...activity] };
-    const answer = textSchema.safeParse(result.text);
+    const answer = agentMessageSchema.safeParse(result.text);
     if (result.finishReason !== "stop" || !answer.success) return { kind: "failed", activity: [...activity] };
     return { kind: "answered", text: answer.data, activity: [...activity] };
   } finally {

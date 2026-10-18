@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { runAgentTurn, type AgentDependencies } from "../src/agent.js";
 import { planMission, type MissionInput } from "../src/index.js";
+import { AGENT_SCHEMA_VERSION, PLANNER_VERSION, type AgentBinding } from "../src/agent-contract.js";
 
 type Response = Awaited<ReturnType<MockLanguageModelV3["doGenerate"]>>;
 const call = (toolName: string, args: unknown = {}, toolCallId = "call-1") => ({ type: "tool-call", toolName, toolCallId, input: JSON.stringify(args) } satisfies Response["content"][number]);
@@ -12,7 +13,7 @@ const response = (content: Response["content"], finishReason: Response["finishRe
   usage: { inputTokens: { total: 5, noCache: 5, cacheRead: 0, cacheWrite: 0 }, outputTokens: { total: 5, text: 5, reasoning: 0 } },
 });
 const answer = (text = "Your orbit is 30 metres.") => response([{ type: "text", text }], "stop");
-const binding = { missionBranchId: "branch", revision: 2, inputDigest: "digest", schemaVersion: "1", plannerVersion: "1" };
+const binding = { missionBranchId: "branch", revision: 2, inputDigest: `sha256:${"0".repeat(64)}`, schemaVersion: AGENT_SCHEMA_VERSION, plannerVersion: PLANNER_VERSION } satisfies AgentBinding;
 const snapshot: MissionInput = {
   shot: { kind: "orbit", centre: { latitudeDeg: 41.1234567, longitudeDeg: -72.1234567 }, radiusM: 30, startBearingDeg: 0, direction: "clockwise", arc: { kind: "closed" } },
   heightAboveTakeoffM: 40, framing: { kind: "fixed", headingDeg: 0, gimbalPitchDeg: -20 },
