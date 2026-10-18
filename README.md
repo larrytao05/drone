@@ -4,7 +4,7 @@ This project builds an LLM-powered flight planner for a DJI drone.
 
 This project is developing a mission planner for DJI drones. It does not control an aircraft.
 
-Status: the deterministic planner and local route editor are implemented. Final review of the current editor work is pending. Orbit editing in the browser, LLM interpretation and DJI flight-file export remain future work; the broader system design below remains proposed. The separate KMZ round-trip experiment remains unchanged.
+Status: the deterministic planner, local route editor, bounded Node agent runtime and private chat endpoint are implemented. The editor does not call the agent yet. Orbit editing in the browser and DJI flight-file export remain future work; the broader system design below remains proposed. The separate KMZ round-trip experiment remains unchanged.
 
 ## Current route editor
 
@@ -59,6 +59,22 @@ The focused browser commands start and stop their own servers:
 `npm run test:e2e -- --list` lists the default browser tests without starting a server. The full `npm run test:e2e` suite does not start its servers. It expects the main app on port 3000 and a no-map app on port 3001 by default. The full suite still includes provider-era map journeys that are not part of the managed local checks. The focused fallback commands select only invalid-locator and WebGL-failure journeys from `map-navigation.spec.ts`. The managed provider commands cover imagery, attribution, tile failure and missing-key behaviour. Final review of the current editor work is pending.
 
 Only Chromium is configured for browser checks. Managed local checks verify the source-free map and editor behaviour. Provider checks use the configured key to verify live imagery and attribution.
+
+## Private chat endpoint
+
+`POST /api/chat` accepts complete planner inputs from a private client. Copy `.env.example` to `.env.local` and set `AGENT_API_TOKEN`, `OPENAI_API_KEY` and an explicit `OPENAI_MODEL`. Run `npm run dev:web` for local API development. The token and key stay on the server. Do not place them in browser code or `NEXT_PUBLIC_` variables. The route returns 503 until the required configuration is present and checks `Authorization: Bearer <AGENT_API_TOKEN>` before reading a request or constructing a model.
+
+The request contains a user message, optional chat history, a complete mission snapshot and a caller-supplied binding. The route accepts only height and orbit-radius changes. It validates each candidate with `planMission` and returns the existing agent outcome, including calculated waypoints for a proposal. It never applies a proposal or controls a drone. The endpoint cannot verify the current editor revision. A client must compare the full binding against its pending snapshot and current revision before it displays or applies a result.
+
+Requests must use JSON and fit within 64 KiB. Message, history and binding data must fit within 24,000 bytes. Each turn allows at most 4 model calls, 6 tool calls and 30 seconds. The provider makes no automatic SDK retries and uses the OpenAI Responses API with `store: false`. The model receives no snapshot coordinates in the generated context or tool results, but user-written text can contain location data. This bearer token is for private CLI and integration clients. Browser authentication, durable quotas, streaming chat and editor acceptance remain future work.
+
+## Agent runtime contract
+
+Import `runAgentTurn` from `@drone/mission-planner/agent`. The caller supplies an AI SDK `LanguageModel`, an immutable snapshot and binding, a change schema, a redacted context description function and a preview function. The runtime does not configure a provider or read or mutate a live mission. Keep coordinates and other private data out of context descriptions, preview summaries and diagnostics. The runtime does not send the raw snapshot or candidate to the model.
+
+The runtime exposes four fixed tools: `get_mission_context`, `preview_change`, `propose_change` and `ask_clarification`. It allows at most 4 model calls, 6 tool calls and 30 seconds per turn by default. It disables SDK retries and limits history to 12 user or assistant messages, with 4,000 characters per message and 24 KB for combined turn metadata and text. Model output is limited to 1,000 tokens. Answer text is limited to 4,000 characters, and each structured model-facing result is limited to 8 KB.
+
+A turn returns `answered` with text, `needs-input` with a question, `proposed` with the unchanged binding, exact validated change and opaque candidate, or a `failed`, `cancelled`, `deadline` or `budget-exceeded` outcome. Every outcome includes tool activity. Cancellation and deadlines suppress late results, even when an operation ignores its abort signal. Such an operation may remain pending after the turn returns. A proposal is staged for caller review. The runtime does not accept it or update mission state.
 
 ## Proposed product scope
 
