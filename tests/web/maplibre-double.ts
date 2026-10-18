@@ -10,7 +10,8 @@ type MapOptions = Readonly<{
   dragRotate?: boolean;
   pitchWithRotate?: boolean;
   touchPitch?: boolean;
-  attributionControl?: boolean;
+  attributionControl?: boolean | Readonly<{ compact?: boolean }>;
+  transformRequest?: (url: string) => Readonly<{ url: string; cache?: RequestCache }>;
 }>;
 
 type CameraOptions = Readonly<{ center: readonly [number, number]; duration: number }>;
@@ -36,6 +37,8 @@ export class FakeMap {
   center: readonly [number, number];
   zoom: number;
   removeCount = 0;
+  loaded = false;
+  projection: Readonly<{ type: 'mercator' }> | null = null;
   removeSnapshot: Readonly<{ sources: readonly string[]; layers: readonly string[]; headings: number }> | null = null;
 
   constructor(options: MapOptions) {
@@ -70,6 +73,7 @@ export class FakeMap {
   }
 
   emit(type: string) {
+    if (type === 'load') this.loaded = true;
     for (const listener of this.handlers.get(type) ?? []) listener();
   }
 
@@ -80,6 +84,12 @@ export class FakeMap {
 
   getContainer() {
     return this.options.container;
+  }
+
+  setProjection(projection: Readonly<{ type: 'mercator' }>) {
+    if (!this.loaded) throw new Error('Projection can only change after style load');
+    this.projection = projection;
+    return this;
   }
 
   unproject(point: [number, number]) {
@@ -157,6 +167,10 @@ export class FakeMap {
 
 export class NavigationControl {
   constructor(readonly options: Readonly<{ showZoom: boolean; showCompass: boolean }>) {}
+}
+
+export class AttributionControl {
+  constructor(readonly options: Readonly<{ compact: boolean }>) {}
 }
 
 export class Marker {

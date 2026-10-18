@@ -33,8 +33,8 @@ export default defineConfig({
   },
   webServer: {
     command: production
-      ? `npm run build:web && npm run start:web -- --hostname 127.0.0.1 --port ${port}`
-      : `npm run dev:web -- --hostname 127.0.0.1 --port ${port}`,
+      ? `env -u MAPTILER_API_KEY -u NEXT_PUBLIC_MAPTILER_API_KEY DRONE_MAP_MODE=local DRONE_NEXT_DIST_DIR=.next sh -c 'npm run build:web && npm run start:web -- --hostname 127.0.0.1 --port ${port}'`
+      : `node scripts/run-map-server.mjs local dev ${port}`,
     url: baseURL,
     reuseExistingServer: false,
     timeout: 120_000,

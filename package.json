@@ -42,7 +42,11 @@
     "test:e2e:editor-local": "playwright test --config playwright.editor-foundation.config.ts",
     "test:e2e:editor-local:prod": "EDITOR_SERVER_MODE=production playwright test --config playwright.editor-foundation.config.ts",
     "test:e2e:map-fallback": "playwright test --config playwright.editor-fallback.config.ts",
-    "test:e2e:map-fallback:prod": "EDITOR_SERVER_MODE=production playwright test --config playwright.editor-fallback.config.ts"
+    "test:e2e:map-fallback:prod": "EDITOR_SERVER_MODE=production playwright test --config playwright.editor-fallback.config.ts",
+    "test:e2e:map-provider": "env -u MAPTILER_API_KEY -u NEXT_PUBLIC_MAPTILER_API_KEY npm run build && DRONE_PLANNER_BUILD=ready node scripts/run-redacted-command.mjs ./node_modules/.bin/playwright test --config playwright.map-provider.config.ts",
+    "test:e2e:map-provider:prod": "env -u MAPTILER_API_KEY -u NEXT_PUBLIC_MAPTILER_API_KEY DRONE_NEXT_DIST_DIR=.next npm run build:web && DRONE_PLANNER_BUILD=ready MAP_PROVIDER_SERVER_MODE=production node scripts/run-redacted-command.mjs ./node_modules/.bin/playwright test --config playwright.map-provider.config.ts",
+    "test:map-server-launcher": "node --test scripts/run-map-server.test.mjs",
+    "test:redact-output": "node --test scripts/redact-output.test.mjs"
   },
   "devDependencies": {
     "@playwright/test": "1.64.0",

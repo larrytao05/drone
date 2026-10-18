@@ -4,15 +4,15 @@ This project builds an LLM-powered flight planner for a DJI drone.
 
 This project is developing a mission planner for DJI drones. It does not control an aircraft.
 
-Status: the deterministic planner in `src/core.ts` and a partial local route editor are implemented. Full Stage 2 remains incomplete; the broader system design below remains proposed. The separate KMZ round-trip experiment remains unchanged.
+Status: the deterministic planner and local route editor are implemented. Final review of the current editor work is pending. Orbit editing in the browser, LLM interpretation and DJI flight-file export remain future work; the broader system design below remains proposed. The separate KMZ round-trip experiment remains unchanged.
 
 ## Current route editor
 
 The browser editor supports route source fields, map-based waypoint creation, marker selection and dragging, manual takeoff and target coordinates, shared height and framing settings, waypoint reordering and deletion, and a nominal calculated-waypoint table. You can also import a versioned JSON source backup to populate the waypoint list.
 
-The map area uses a native MapLibre canvas with a local background style, pan and zoom, a coordinate locator, waypoint markers and map-based point editing. It shows takeoff and target markers when those coordinates are set. The preview draws the calculated route as GeoJSON line features and shows directional camera-heading markers. These are nominal planner values, not imagery or a live view of the site.
+The map area uses MapLibre GL JS with MapTiler's `hybrid-v4` style when `MAPTILER_API_KEY` is configured. Without a key, the map stays unavailable while route editing, preview and Save remain usable. The native attribution control reads attribution from the style sources. The preview draws the calculated route as GeoJSON line features and shows directional camera-heading markers. Imagery is background context, not a live survey of the site.
 
-The local map canvas is blank. It makes no external map requests and has no provider imagery, provider authentication or provider attribution. The planned `NEXT_PUBLIC_MAPTILER_API_KEY` variable is not read by current source.
+Managed local map checks explicitly select the source-free renderer. They make no external map requests. Provider checks use a separate keyed server and a no-key server.
 
 Save opens a native review dialog and writes one draft slot to the current browser's `localStorage` only after you confirm. Load reads that slot only when you select Load. The editor does not autosave or load a draft at startup. Storage stays in that browser profile and does not sync across devices.
 
@@ -48,15 +48,17 @@ The focused browser commands start and stop their own servers:
 | `npm run test:e2e:local-source` | Imported coordinate editing, New and layout/accessibility journeys | 3103 |
 | `npm run test:e2e:map-local` | Native local canvas, locator, pan/zoom and local worker | 3103 |
 | `npm run test:e2e:map-local:prod` | Production native local canvas and worker | 3104 |
+| `npm run test:e2e:map-provider` | Live MapTiler imagery, attribution, tile failure and original provider journeys | 3000, 3001 |
+| `npm run test:e2e:map-provider:prod` | The same provider journeys against a key-free production build | 3000, 3001 |
 | `npm run test:e2e:points` | Native point creation, selection, coordinate editing and drag | 3103 |
 | `npm run test:e2e:editor-local` | All managed local editor journeys, including existing review, backup, editing and map journeys | 3103 |
 | `npm run test:e2e:editor-local:prod` | The same managed journeys against a production build | 3104 |
 | `npm run test:e2e:map-fallback` | Invalid locator and WebGL-failure journeys only | 3103 |
 | `npm run test:e2e:map-fallback:prod` | The same fallback journeys against a production build | 3104 |
 
-`npm run test:e2e -- --list` lists the default browser tests without starting a server. The full `npm run test:e2e` suite does not start its servers. It expects the main app on port 3000 and a no-map app on port 3001 by default. The full suite still includes provider-era map journeys that are not part of the managed local checks. The focused fallback commands select only invalid-locator and WebGL-failure journeys from `map-navigation.spec.ts`. Provider navigation, attribution, tile-failure and missing-key assertions remain unverified until provider integration is approved and implemented.
+`npm run test:e2e -- --list` lists the default browser tests without starting a server. The full `npm run test:e2e` suite does not start its servers. It expects the main app on port 3000 and a no-map app on port 3001 by default. The full suite still includes provider-era map journeys that are not part of the managed local checks. The focused fallback commands select only invalid-locator and WebGL-failure journeys from `map-navigation.spec.ts`. The managed provider commands cover imagery, attribution, tile failure and missing-key behaviour. Final review of the current editor work is pending.
 
-Only Chromium is configured for browser checks. Managed local checks verify the blank local map and editor behaviour. They do not verify provider imagery, authentication or attribution.
+Only Chromium is configured for browser checks. Managed local checks verify the source-free map and editor behaviour. Provider checks use the configured key to verify live imagery and attribution.
 
 ## Proposed product scope
 
@@ -111,7 +113,11 @@ Every height uses `heightAboveTakeoffM`. This is a vertical offset from the plan
 
 ### Planned map and camera information
 
-The approved map design uses MapLibre GL JS with MapTiler's hybrid-v4 style. Provider requests and use of a public map key are pending explicit human approval. The current app displays a local native canvas with a plain background and makes no MapTiler requests. It has not verified live imagery or provider authentication. `NEXT_PUBLIC_MAPTILER_API_KEY` is the planned variable name, but current source does not read it. When implemented, map imagery will provide background context, not a current survey of obstacles.
+The editor uses MapLibre GL JS with MapTiler's `hybrid-v4` style. The runtime `/api/map-config` route returns the style URL with `Cache-Control: no-store`, and MapLibre requests provider resources with browser caching disabled. The server-only `MAPTILER_API_KEY` name keeps Next.js from inlining the key in build output. The key is delivered to the browser at runtime because MapTiler requires it for public map requests.
+
+Keep `MAPTILER_API_KEY` in the original workspace's `.env.local`. Provider E2E commands read the named value from that file at runtime. Set `DRONE_MAP_ENV_FILE` to the file path when running `npm run test:e2e:map-provider`. The launcher redacts the key from server output before Playwright receives it. Production provider checks build in a checkout without the dotenv file and clear both map-key environment variables.
+
+The provider commands build the planner once with both map-key environment variables cleared before starting the keyed and missing-key servers. Both provider servers reuse that build. Other managed development-server launches run the existing build task before Next starts.
 
 The LLM receives selected object IDs, their roles, shot parameters and allowed bounds. It does not need satellite pixels or coordinates to interpret "orbit target A clockwise". The local planner already has target A's location. Free text still goes to the model provider and may contain location information supplied by the operator.
 
@@ -173,7 +179,7 @@ flowchart TD
 | Component | Choice | Responsibility |
 | --- | --- | --- |
 | Web app | Next.js, React and TypeScript on Vercel | Forms, map, preview, review and downloads |
-| Map | MapLibre GL JS with MapTiler hybrid-v4 | Planned satellite and hybrid background with visual overlays; provider requests await explicit approval |
+| Map | MapLibre GL JS with MapTiler `hybrid-v4` | Provider imagery and visual overlays in the browser |
 | Mission domain | Local TypeScript module | Input validation, geometry, actions, revisions, review and export eligibility |
 | Local persistence | One `localStorage` draft slot in the current editor; IndexedDB remains proposed | Explicit local Save and Load; source-only JSON backups |
 | Interpretation | Next.js route handler using the Node.js runtime | Protected, bounded model request and schema validation |
@@ -182,7 +188,7 @@ flowchart TD
 | Usage counters | Small managed Redis store, proposed [Upstash](https://upstash.com/docs/redis/features/restapi) | Atomic daily request quota and concurrent-request limit |
 | DJI exporter | Private module inside the mission domain | Profile-specific encoding after compatibility validation |
 
-The planned map integration will need a public browser key. Keep model and Redis credentials on the server. Next.js exposes `NEXT_PUBLIC_` variables to the browser. [Next.js data security](https://nextjs.org/docs/app/guides/data-security)
+The map uses a public provider key at runtime. Keep model and Redis credentials on the server. The server-only map-key name prevents Next.js build-time public-variable inlining. [Next.js data security](https://nextjs.org/docs/app/guides/data-security)
 
 Vercel currently supports All Deployments authentication on all plans, including production URLs. Enable it explicitly, restrict project access and avoid public bypasses. Confirm unauthenticated requests to the paid endpoint fail before enabling the provider key. Public GitHub source does not require public access to the running planner. [Vercel deployment protection](https://vercel.com/docs/deployment-protection)
 
@@ -352,4 +358,4 @@ Local planning and JSON work can proceed while flight-file compatibility remains
 | Model provider, model, map account and usage budget | Inference and deployment |
 | Operator's numeric flight limits and selected lens | Each complete mission |
 
-Implementation reconciliation: the repository includes a deterministic route and orbit planner and a partial local route editor. The editor supports manual source fields, waypoint list editing, a calculated table, explicit local Save and Load, native review, and source-only JSON backups. Its blank local map supports point creation, selection and dragging, but does not connect imagery. Orbit editing in the browser, LLM interpretation and DJI flight-file export are not implemented. The separate KMZ evidence above remains limited to the recorded unchanged mission and version tuple.
+Implementation reconciliation: the repository includes a deterministic route and orbit planner and a local route editor. The editor supports manual source fields, waypoint list editing, a calculated table, explicit local Save and Load, native review, source-only JSON backups and provider imagery when configured. Editing remains available when imagery is missing or fails. Final review of the current editor work is pending. Orbit editing in the browser, LLM interpretation and DJI flight-file export remain future work. The separate KMZ evidence above remains limited to the recorded unchanged mission and version tuple.

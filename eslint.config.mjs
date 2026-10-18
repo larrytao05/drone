@@ -33,6 +33,6 @@ export default tseslint.config(
     }
   },
   {
-    ignores: ["dist/**", ".next/**", "next-env.d.ts", "node_modules/**", "playwright-report/**", "test-results/**", "public/maplibre-gl-worker.mjs"]
+    ignores: ["dist/**", ".next/**", ".next-map-*/**", "next-env.d.ts", "node_modules/**", "playwright-report/**", "test-results/**", "public/maplibre-gl-worker.mjs"]
   }
 );
