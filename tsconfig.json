@@ -18,6 +18,7 @@
     "src/**/*.ts",
     "tests/planner.test.ts",
     "tests/agent.test.ts",
-    "tests/chat.test.ts"
+    "tests/chat.test.ts",
+    "tests/browser-agent.test.ts"
   ]
 }

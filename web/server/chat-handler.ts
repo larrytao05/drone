@@ -13,7 +13,7 @@ type ChatHandlerOptions = Readonly<{
   getModel: () => LanguageModel | undefined;
 }>;
 
-function json(status: number, body: unknown): Response {
+export function json(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), {
     status,
     headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" },
@@ -27,7 +27,7 @@ function matchesToken(header: string | null, expected: string): boolean {
   return supplied.length === configured.length && timingSafeEqual(supplied, configured);
 }
 
-async function readBody(request: Request): Promise<
+export async function readBody(request: Request, limit = MAX_BODY_BYTES): Promise<
   | { kind: "read"; bytes: Uint8Array }
   | { kind: "too-large" }
   | { kind: "cancelled" }
@@ -49,7 +49,7 @@ async function readBody(request: Request): Promise<
       if (request.signal.aborted) return { kind: "cancelled" };
       if (part.done) break;
       byteCount += part.value.byteLength;
-      if (byteCount > MAX_BODY_BYTES) {
+      if (byteCount > limit) {
         cancelRead();
         return { kind: "too-large" };
       }
@@ -71,13 +71,28 @@ async function readBody(request: Request): Promise<
   return { kind: "read", bytes };
 }
 
-function responseEnvelope(status: number, value: unknown, request: AgentRequest): Response {
+export async function readJsonBody(request: Request, limit = MAX_BODY_BYTES): Promise<
+  | { kind: "read"; value: unknown }
+  | { kind: "too-large" }
+  | { kind: "cancelled" }
+  | { kind: "invalid" }
+> {
+  const body = await readBody(request, limit);
+  if (body.kind !== "read") return body;
+  try {
+    return { kind: "read", value: JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(body.bytes)) };
+  } catch {
+    return { kind: "invalid" };
+  }
+}
+
+export function responseEnvelope(status: number, value: unknown, request: AgentRequest): Response {
   return json(status, agentResponseSchema.parse({
     requestId: request.requestId, binding: request.binding, outcome: value,
   }));
 }
 
-function outcomeResponse(outcome: AgentOutcome<MissionChange, MissionCandidate>, request: AgentRequest): Response {
+export function outcomeResponse(outcome: AgentOutcome<MissionChange, MissionCandidate>, request: AgentRequest): Response {
   switch (outcome.kind) {
     case "answered":
     case "needs-input":
@@ -114,18 +129,12 @@ export function createChatHandler({ getAccessToken, getModel }: ChatHandlerOptio
     const mediaType = request.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase();
     if (mediaType !== "application/json") return json(415, { kind: "unsupported-media-type" });
 
-    const body = await readBody(request);
+    const body = await readJsonBody(request);
     if (body.kind === "too-large") return json(413, { kind: "payload-too-large" });
     if (body.kind === "cancelled") return json(499, { kind: "cancelled" });
     if (body.kind === "invalid") return json(400, { kind: "invalid-request" });
 
-    let value: unknown;
-    try {
-      value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(body.bytes));
-    } catch {
-      return json(400, { kind: "invalid-request" });
-    }
-    const parsed = agentRequestSchema.safeParse(value);
+    const parsed = agentRequestSchema.safeParse(body.value);
     if (!parsed.success) return json(400, { kind: "invalid-request" });
     if (request.signal.aborted) return responseEnvelope(499, { kind: "cancelled", activity: [] }, parsed.data);
 

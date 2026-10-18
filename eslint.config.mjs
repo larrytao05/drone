@@ -33,7 +33,7 @@ export default tseslint.config(
     }
   },
   {
-    files: ["web/server/chat-handler.ts"],
+    files: ["web/server/chat-handler.ts", "web/server/browser-agent.ts"],
     rules: {
       "no-restricted-imports": [
         "error",

@@ -3,6 +3,32 @@ import { planMission, type MissionInput, type Waypoint } from "./index.js";
 
 export const AGENT_SCHEMA_VERSION = "1";
 export const PLANNER_VERSION = "1";
+export const AGENT_RETRY_WINDOW_MS = 120_000;
+
+export const agentEpochSchema = z.string().regex(/^[0-9a-f]{32}$/);
+export const agentRequestIdSchema = z.string().regex(/^[0-9a-f]{32}\.\d{13}\.[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i).max(128);
+export const agentSessionRequestSchema = z.discriminatedUnion("action", [
+  z.strictObject({ action: z.literal("status") }),
+  z.strictObject({ action: z.literal("logout") }),
+  z.strictObject({ action: z.literal("login"), password: z.string().min(1).max(256) }),
+]);
+export const agentSessionResponseSchema = z.discriminatedUnion("authenticated", [
+  z.strictObject({ authenticated: z.literal(false) }),
+  z.strictObject({ authenticated: z.literal(true), epoch: agentEpochSchema, serverNow: z.number().int().nonnegative(), retryWindowMs: z.literal(AGENT_RETRY_WINDOW_MS) }),
+]);
+export type AgentSessionResponse = z.infer<typeof agentSessionResponseSchema>;
+
+export function formatAgentRequestId(epoch: string, createdAt: number, uuid: string): string {
+  return agentRequestIdSchema.parse(`${epoch}.${createdAt}.${uuid}`);
+}
+
+export function isCurrentAgentRequestId(requestId: string, epoch: string, now: number): boolean {
+  if (!agentRequestIdSchema.safeParse(requestId).success) return false;
+  const [requestEpoch, timestamp] = requestId.split(".");
+  if (requestEpoch !== epoch) return false;
+  const createdAt = Number(timestamp);
+  return createdAt <= now + 5_000 && createdAt + AGENT_RETRY_WINDOW_MS > now;
+}
 
 export const agentBindingSchema = z.strictObject({
   missionBranchId: z.string().min(1).max(128),
@@ -115,6 +141,10 @@ function canonicalJson(value: unknown): string {
 export function canonicalMissionInput(input: MissionInput): string {
   if (!isMissionInput(input)) throw new Error("Invalid mission input");
   return canonicalJson(input);
+}
+
+export function canonicalAgentRequest(request: AgentRequest): string {
+  return canonicalJson(request);
 }
 
 export async function digestMissionInput(input: MissionInput): Promise<string> {
