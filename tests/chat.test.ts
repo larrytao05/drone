@@ -3,7 +3,7 @@ import { generateText } from "ai";
 import { describe, expect, it, vi } from "vitest";
 import { createChatHandler } from "../web/server/chat-handler.js";
 import { getConfiguredModel } from "../web/server/model.js";
-import { previewMissionChange } from "../web/server/mission-agent.js";
+import { previewMissionChange, digestMissionInput, AGENT_SCHEMA_VERSION, PLANNER_VERSION, agentResponseSchema } from "../src/agent-contract.js";
 import type { MissionInput } from "../src/index.js";
 
 type ModelResponse = Awaited<ReturnType<MockLanguageModelV3["doGenerate"]>>;
@@ -12,12 +12,12 @@ const response = (content: ModelResponse["content"], finishReason: ModelResponse
   content, warnings: [], finishReason: { unified: finishReason, raw: finishReason },
   usage: { inputTokens: { total: 5, noCache: 5, cacheRead: 0, cacheWrite: 0 }, outputTokens: { total: 5, text: 5, reasoning: 0 } },
 });
-const binding = { missionBranchId: "branch", revision: 2, inputDigest: "digest", schemaVersion: "1", plannerVersion: "1" };
 const snapshot: MissionInput = {
   shot: { kind: "orbit", centre: { latitudeDeg: 41.1234567, longitudeDeg: -72.1234567 }, radiusM: 30, startBearingDeg: 0, direction: "clockwise", arc: { kind: "closed" } },
   heightAboveTakeoffM: 40, framing: { kind: "fixed", headingDeg: 0, gimbalPitchDeg: -20 },
 };
-const payload = { message: "Set orbit radius to 45 metres", snapshot, binding };
+const binding = { missionBranchId: "branch", revision: 2, inputDigest: await digestMissionInput(snapshot), schemaVersion: AGENT_SCHEMA_VERSION, plannerVersion: PLANNER_VERSION };
+const payload = { requestId: "request-1", message: "Set orbit radius to 45 metres", snapshot, binding };
 const request = (body: unknown, token = "private-token") => new Request("http://localhost/api/chat", {
   method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body: JSON.stringify(body),
 });
@@ -76,17 +76,16 @@ describe("private chat HTTP handler", () => {
     const original = JSON.stringify(snapshot);
     const result = await read(await handler(model)(request(payload)));
     expect(result.status).toBe(200);
-    expect(result.body).toMatchObject({ kind: "proposed", binding, change: { kind: "set-orbit-radius", radiusM: 45 }, candidate: { input: { shot: { radiusM: 45 } } } });
+    expect(result.body).toMatchObject({ requestId: "request-1", binding, outcome: { kind: "proposed", change: { kind: "set-orbit-radius", radiusM: 45 } } });
+    expect(agentResponseSchema.safeParse(result.body).success).toBe(true);
+    expect(JSON.stringify(result.body)).not.toContain("candidate");
     const expected = previewMissionChange(snapshot, { kind: "set-orbit-radius", radiusM: 45 });
     if (expected.kind !== "valid") throw new Error("Expected valid preview");
-    if (typeof result.body !== "object" || result.body === null || !("candidate" in result.body)) throw new Error("Expected candidate");
-    expect(result.body.candidate).toEqual(expected.candidate);
-    expect(result.body.candidate).toMatchObject({ input: {
+    expect(expected.candidate).toMatchObject({ input: {
       shot: { centre: { latitudeDeg: 41.1234567, longitudeDeg: -72.1234567 }, radiusM: 45, startBearingDeg: 0, direction: "clockwise", arc: { kind: "closed" } },
       heightAboveTakeoffM: 40, framing: { kind: "fixed", headingDeg: 0, gimbalPitchDeg: -20 },
     } });
-    if (typeof result.body.candidate !== "object" || result.body.candidate === null || !("waypoints" in result.body.candidate)) throw new Error("Expected waypoints");
-    expect(result.body.candidate.waypoints).toHaveLength(16);
+    expect(expected.candidate.waypoints).toHaveLength(16);
     expect(snapshot.shot).toMatchObject({ radiusM: 30 });
     expect(JSON.stringify(snapshot)).toBe(original);
     expect(JSON.stringify(model.doGenerateCalls)).not.toContain("41.1234567");
@@ -117,7 +116,7 @@ describe("private chat HTTP handler", () => {
   it("returns a safe provider failure", async () => {
     const model = new MockLanguageModelV3({ doGenerate: async (): Promise<ModelResponse> => { throw new Error("secret-provider-error"); } });
     const result = await read(await handler(model)(request(payload)));
-    expect(result).toEqual({ status: 502, body: { kind: "failed", activity: [], message: "The model could not complete this request." }, cache: "no-store" });
+    expect(result).toEqual({ status: 502, body: { requestId: "request-1", binding, outcome: { kind: "failed", activity: [], message: "The model could not complete this request." } }, cache: "no-store" });
   });
 
   it("retains completed tool activity after a provider failure", async () => {
@@ -128,14 +127,14 @@ describe("private chat HTTP handler", () => {
     const result = await read(await handler(model)(request(payload)));
     expect(result).toEqual({
       status: 502,
-      body: {
+      body: { requestId: "request-1", binding, outcome: {
         kind: "failed",
         activity: [
           { tool: "get_mission_context", status: "started" },
           { tool: "get_mission_context", status: "succeeded" },
         ],
         message: "The model could not complete this request.",
-      },
+      } },
       cache: "no-store",
     });
     expect(JSON.stringify(result)).not.toContain("secret-provider-error");

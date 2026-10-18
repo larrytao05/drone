@@ -11,6 +11,10 @@
     "./agent": {
       "types": "./dist/agent.d.ts",
       "import": "./dist/agent.js"
+    },
+    "./agent-contract": {
+      "types": "./dist/agent-contract.d.ts",
+      "import": "./dist/agent-contract.js"
     }
   },
   "files": [

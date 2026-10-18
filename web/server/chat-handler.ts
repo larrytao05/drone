@@ -1,29 +1,13 @@
 import { timingSafeEqual } from "node:crypto";
-import { runAgentTurn, agentBindingSchema, type AgentOutcome } from "../../src/agent.ts";
-import type { LanguageModel } from "ai";
-import { z } from "zod";
+import { runAgentTurn, type AgentOutcome } from "@drone/mission-planner/agent";
 import {
-  describeMission,
-  isMissionInput,
-  missionChangeSchema,
-  previewMissionChange,
-  type MissionCandidate,
-  type MissionChange,
-} from "./mission-agent.ts";
+  agentRequestSchema, agentResponseSchema, missionChangeSchema, previewMissionChange,
+  type AgentRequest, type MissionCandidate, type MissionChange,
+} from "@drone/mission-planner/agent-contract";
+import type { LanguageModel } from "ai";
+import { describeMission } from "./mission-agent.ts";
 
 const MAX_BODY_BYTES = 64 * 1024;
-const MAX_AGENT_INPUT_BYTES = 24_000;
-const messageSchema = z.string().trim().min(1).max(4_000);
-const historySchema = z.array(z.strictObject({
-  role: z.enum(["user", "assistant"]),
-  content: messageSchema,
-})).max(12).default([]);
-const chatRequestSchema = z.strictObject({
-  message: messageSchema,
-  history: historySchema,
-  snapshot: z.custom<import("@drone/mission-planner").MissionInput>(isMissionInput),
-  binding: agentBindingSchema,
-});
 type ChatHandlerOptions = Readonly<{
   getAccessToken: () => string | undefined;
   getModel: () => LanguageModel | undefined;
@@ -87,20 +71,27 @@ async function readBody(request: Request): Promise<
   return { kind: "read", bytes };
 }
 
-function outcomeResponse(outcome: AgentOutcome<MissionChange, MissionCandidate>): Response {
+function responseEnvelope(status: number, value: unknown, request: AgentRequest): Response {
+  return json(status, agentResponseSchema.parse({
+    requestId: request.requestId, binding: request.binding, outcome: value,
+  }));
+}
+
+function outcomeResponse(outcome: AgentOutcome<MissionChange, MissionCandidate>, request: AgentRequest): Response {
   switch (outcome.kind) {
     case "answered":
     case "needs-input":
+      return responseEnvelope(200, outcome, request);
     case "proposed":
-      return json(200, outcome);
+      return responseEnvelope(200, { kind: "proposed", change: outcome.change, activity: outcome.activity }, request);
     case "failed":
-      return json(502, { ...outcome, message: "The model could not complete this request." });
+      return responseEnvelope(502, { ...outcome, message: "The model could not complete this request." }, request);
     case "cancelled":
-      return json(499, outcome);
+      return responseEnvelope(499, outcome, request);
     case "deadline":
-      return json(504, outcome);
+      return responseEnvelope(504, outcome, request);
     case "budget-exceeded":
-      return json(429, outcome);
+      return responseEnvelope(429, outcome, request);
     default: {
       const exhaustive: never = outcome;
       return exhaustive;
@@ -134,22 +125,17 @@ export function createChatHandler({ getAccessToken, getModel }: ChatHandlerOptio
     } catch {
       return json(400, { kind: "invalid-request" });
     }
-    const parsed = chatRequestSchema.safeParse(value);
+    const parsed = agentRequestSchema.safeParse(value);
     if (!parsed.success) return json(400, { kind: "invalid-request" });
-    if (Buffer.byteLength(JSON.stringify({
-      message: parsed.data.message,
-      history: parsed.data.history,
-      binding: parsed.data.binding,
-    })) > MAX_AGENT_INPUT_BYTES) return json(400, { kind: "invalid-request" });
-    if (request.signal.aborted) return json(499, { kind: "cancelled" });
+    if (request.signal.aborted) return responseEnvelope(499, { kind: "cancelled", activity: [] }, parsed.data);
 
     let model: LanguageModel | undefined;
     try {
       model = getModel();
     } catch {
-      return json(502, { kind: "failed", message: "The model could not complete this request." });
+      return responseEnvelope(502, { kind: "failed", activity: [], message: "The model could not complete this request." }, parsed.data);
     }
-    if (!model) return json(503, { kind: "unavailable" });
+    if (!model) return responseEnvelope(503, { kind: "unavailable", activity: [] }, parsed.data);
 
     const outcome = await runAgentTurn(
       {
@@ -166,6 +152,6 @@ export function createChatHandler({ getAccessToken, getModel }: ChatHandlerOptio
         signal: request.signal,
       },
     );
-    return outcomeResponse(outcome);
+    return outcomeResponse(outcome, parsed.data);
   };
 }
