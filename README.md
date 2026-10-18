@@ -1,8 +1,46 @@
 This project builds an LLM-powered controller for a DJI drone.
 
+Stage 3 design proposal: [chat agent and LLM integration](docs/stage-3-llm-integration.html). A Node-only agent runtime is implemented in the `@drone/mission-planner/agent` package subpath. The runtime can answer, request clarification or return a validated proposal for review. A private Node HTTP route and configurable OpenAI connection are now implemented. The chat UI, persistence, durable quotas and mission acceptance flow remain proposed application work.
+
 # System design
 
-Status: proposed application design with a deterministic waypoint planner implemented in `src/core.ts`, 10 October 2026. The planner validates route and orbit requests and returns waypoint values or structured input issues. The editor, interpretation endpoint and flight-file export remain proposed. The separate KMZ round-trip experiment remains unchanged.
+Status: Node agent runtime and private interpretation endpoint implemented, editor integration proposed, 13 October 2026. The deterministic waypoint planner in `src/core.ts` validates route and orbit requests and returns waypoint values or structured input issues. The editor, durable quotas, mission acceptance flow and flight-file export remain proposed. The separate KMZ round-trip experiment remains unchanged.
+
+## Private chat endpoint
+
+The Node route at `POST /api/chat` accepts complete planner inputs from a private client. Copy `.env.example` to `.env.local` and set `AGENT_API_TOKEN`, `OPENAI_API_KEY` and an explicit `OPENAI_MODEL`. Run `npm run dev:web` for local API development. The token and key stay on the server. Never place them in browser code or `NEXT_PUBLIC_` variables. The route returns 503 until the required configuration is present, and requires `Authorization: Bearer <AGENT_API_TOKEN>` before reading a request or constructing a model.
+
+The request body has this shape. The sample coordinates and identifiers are illustrative.
+
+```json
+{
+  "message": "Set the orbit radius to 45 metres",
+  "history": [],
+  "snapshot": {
+    "shot": {
+      "kind": "orbit",
+      "centre": { "latitudeDeg": 41.1234567, "longitudeDeg": -72.1234567 },
+      "radiusM": 30,
+      "startBearingDeg": 0,
+      "direction": "clockwise",
+      "arc": { "kind": "closed" }
+    },
+    "heightAboveTakeoffM": 40,
+    "framing": { "kind": "fixed", "headingDeg": 0, "gimbalPitchDeg": -20 }
+  },
+  "binding": {
+    "missionBranchId": "branch-1",
+    "revision": 2,
+    "inputDigest": "example-digest",
+    "schemaVersion": "1",
+    "plannerVersion": "1"
+  }
+}
+```
+
+The route accepts only height and orbit-radius changes. It validates every candidate with `planMission` and returns the existing agent outcome, including calculated waypoints for a proposal. It never applies a proposal or controls a drone. The binding is caller-supplied correlation data; this endpoint cannot verify the current editor revision. A future browser client must compare the full binding against its pending snapshot and current revision before showing or applying a result.
+
+Requests must use JSON and fit within 64 KiB. Message, history and binding data must fit within 24,000 bytes. Each turn has at most 4 model calls, 6 tool calls and 30 seconds, with no automatic SDK retries. The provider uses the [OpenAI Responses API](https://ai-sdk.dev/providers/ai-sdk-providers/openai) with `store: false`. The provider prompt and tool results omit snapshot coordinates, while user-written text can still contain locations and is sent to the provider. Browser authentication, durable quotas, streaming chat and editor acceptance are still required before deployment. This bearer token is for private CLI and integration clients only.
 
 ## Browser foundation commands
 
@@ -99,6 +137,14 @@ Use JavaScript Object Notation (JSON) for portable planning files. KMZ denotes t
 Show nominal route length and duration, including known dwell time. The duration estimate excludes unverified approach, return, acceleration and environmental delays. It does not establish battery sufficiency.
 
 A report that passes geometry checks means the plan meets the supplied mathematical constraints. The operator still checks the site, clearance, weather, battery, flight permissions and DJI Fly settings.
+
+## Agent runtime contract
+
+Import `runAgentTurn` from `@drone/mission-planner/agent`. The caller supplies an AI SDK `LanguageModel`, an immutable snapshot and its binding, a change schema, a redacted context description function and a preview function. The module does not configure a provider or read or mutate a live mission. The caller must keep coordinates and other private data out of context descriptions, preview summaries and diagnostics. The runtime does not send the raw snapshot or candidate to the model.
+
+The runtime exposes four fixed tools: `get_mission_context`, `preview_change`, `propose_change` and `ask_clarification`. It allows at most 4 model calls, 6 tool calls and 30 seconds per turn by default. It disables SDK retries and bounds history to 12 user or assistant messages, each at 4,000 characters, with a 24KB cap on the combined turn metadata and text. Model output is capped at 1,000 tokens; returned answer text is capped at 4,000 characters, and each structured model-facing result is capped at 8KB. Limits can be lowered for tests but cannot exceed those caps.
+
+A turn returns `answered` with text, `needs-input` with a question, `proposed` with the unchanged binding, exact validated change and opaque candidate, or a `failed`, `cancelled`, `deadline` or `budget-exceeded` outcome. Every outcome includes tool activity. Cancellation and deadlines suppress late results, even when an operation ignores its abort signal. Such an operation may remain pending after the turn returns. A proposal is staged for a caller to review; this runtime does not accept it or update mission state.
 
 ## Architecture
 
