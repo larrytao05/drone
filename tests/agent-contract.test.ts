@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { planMission, type MissionInput } from "../src/index.js";
 import {
-  AGENT_SCHEMA_VERSION, PLANNER_VERSION, agentRequestSchema, agentResponseSchema,
-  canonicalMissionInput, digestMissionInput, editorHeightChangeSchema, missionChangeSchema, previewMissionChange,
+  AGENT_RETRY_WINDOW_MS, AGENT_SCHEMA_VERSION, PLANNER_VERSION, agentRequestSchema, agentResponseSchema,
+  agentSessionRequestSchema, agentSessionResponseSchema, canonicalMissionInput, digestMissionInput,
+  editorHeightChangeSchema, formatAgentRequestId, isCurrentAgentRequestId, missionChangeSchema, previewMissionChange,
 } from "../src/agent-contract.js";
 
 const route: MissionInput = {
@@ -17,6 +18,19 @@ const orbit: MissionInput = {
 };
 
 describe("browser agent contract", () => {
+  it("defines a bounded session bootstrap and finite request-ID lease", () => {
+    const epoch = "a".repeat(32);
+    const now = 1_800_000_000_000;
+    const requestId = formatAgentRequestId(epoch, now, "123e4567-e89b-42d3-a456-426614174000");
+    expect(agentSessionRequestSchema.safeParse({ action: "login", password: "secret" }).success).toBe(true);
+    expect(agentSessionRequestSchema.safeParse({ action: "status", password: "extra" }).success).toBe(false);
+    expect(agentSessionResponseSchema.safeParse({ authenticated: false, epoch }).success).toBe(false);
+    expect(agentSessionResponseSchema.safeParse({ authenticated: true, epoch, serverNow: now, retryWindowMs: AGENT_RETRY_WINDOW_MS }).success).toBe(true);
+    expect(isCurrentAgentRequestId(requestId, epoch, now)).toBe(true);
+    expect(isCurrentAgentRequestId(requestId, epoch, now + AGENT_RETRY_WINDOW_MS)).toBe(false);
+    expect(isCurrentAgentRequestId(requestId, "b".repeat(32), now)).toBe(false);
+  });
+
   it("digests validated JSON independent of object key order and negative zero", async () => {
     const reordered = {
       framing: { gimbalPitchDeg: -10, headingDeg: 45, kind: "fixed" },
