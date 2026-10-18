@@ -1,5 +1,5 @@
 import { planMission } from '@drone/mission-planner';
-import type { Coordinate, Framing, InputIssue, PlanResult } from '@drone/mission-planner';
+import type { Coordinate, Framing, InputIssue, MissionInput, PlanResult } from '@drone/mission-planner';
 import type { CoordinateText, MissionDraft, RoutePoint } from './editor';
 import { parseNumericText } from './numeric-input';
 
@@ -9,7 +9,7 @@ export type EditorIssue = InputIssue & Readonly<{
 }>;
 export type DraftAnalysis = Readonly<{
   route:
-    | Extract<PlanResult, { kind: 'calculated' }>
+    | (Extract<PlanResult, { kind: 'calculated' }> & Readonly<{ input: MissionInput }>)
     | Readonly<{ kind: 'not-calculated'; issues: readonly EditorIssue[] }>;
   sourcePoints: readonly Readonly<{ id: string; coordinate: Coordinate }>[];
   takeoff: Coordinate | null;
@@ -96,10 +96,16 @@ export function analyseDraft(draft: MissionDraft): DraftAnalysis {
   const heightAboveTakeoffM = parseNumericText(draft.height);
   if (heightAboveTakeoffM === null) issues.push(editorIssue(numericIssue(['heightAboveTakeoffM']), points));
   const framing = parseFraming(draft, issues, target);
-  const result = anchors.length === points.length && heightAboveTakeoffM !== null && framing !== null
-    ? planMission({ shot: { kind: 'route', anchors }, heightAboveTakeoffM, framing }) : null;
-  const route: DraftAnalysis['route'] = result?.kind === 'calculated' ? result
-    : { kind: 'not-calculated', issues: result === null ? issues : result.issues.map((issue) => editorIssue(issue, points)) };
+  const input: MissionInput | null = anchors.length === points.length && heightAboveTakeoffM !== null && framing !== null
+    ? { shot: { kind: 'route', anchors }, heightAboveTakeoffM, framing } : null;
+  let route: DraftAnalysis['route'];
+  if (input === null) {
+    route = { kind: 'not-calculated', issues };
+  } else {
+    const result = planMission(input);
+    route = result.kind === 'calculated' ? { ...result, input }
+      : { kind: 'not-calculated', issues: result.issues.map((issue) => editorIssue(issue, points)) };
+  }
   const takeoff = draft.takeoff === null ? null : parseCoordinate(draft.takeoff, ['takeoff'], points);
   const takeoffIssues = takeoff === null
     ? [{ path: ['takeoff'], code: 'missing', message: 'Set a takeoff coordinate before reviewing.' }]

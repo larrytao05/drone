@@ -14,7 +14,12 @@ describe('Current calculated preview', () => {
   it('matches the public planner output without inventing intermediate anchors', () => {
     const draft = makeDraft();
     const expected = planMission({ shot: { kind: 'route', anchors: draft.points.map((point) => ({ latitudeDeg: Number(point.coordinate.latitude), longitudeDeg: Number(point.coordinate.longitude) })) }, heightAboveTakeoffM: 30, framing: { kind: 'fixed', headingDeg: 90, gimbalPitchDeg: -45 } });
-    expect(analyseDraft(draft).route).toEqual(expected);
+    const route = analyseDraft(draft).route;
+    expect(route.kind).toBe('calculated');
+    if (route.kind !== 'calculated') throw new Error('Expected a calculated route');
+    const { input, ...calculation } = route;
+    expect(planMission(input)).toEqual(calculation);
+    expect(calculation).toEqual(expected);
   });
   it.each(['height', 'coordinates', 'framing'])('clears a previously calculated plan after invalid %s', (field) => {
     const before = makeDraft();
