@@ -1,7 +1,7 @@
 import {
   AGENT_SCHEMA_VERSION, PLANNER_VERSION, agentHistorySchema, agentMessageSchema,
   agentRequestSchema, agentResponseSchema, canonicalMissionInput, digestMissionInput,
-  editorHeightChangeSchema, previewMissionChange,
+  editorHeightChangeSchema, previewMissionChange, sameAgentBinding,
   type AgentRequest, type AgentResponse,
 } from '@drone/mission-planner/agent-contract';
 import { analyseDraft } from './mission-input';
@@ -41,6 +41,8 @@ export type EditorSessionAction =
   | Readonly<{ type: 'new-route'; missionBranchId: string }>
   | Readonly<{ type: 'import-route'; missionBranchId: string; draft: MissionDraft }>
   | Readonly<{ type: 'load-route'; missionBranchId: string; draft: MissionDraft; reviewed: boolean }>
+  | Readonly<{ type: 'cancel-request'; requestId: string }>
+  | Readonly<{ type: 'reset-agent' }>
   | Readonly<{ type: 'register-request'; capture: RequestCapture }>
   | Readonly<{ type: 'begin-request'; capture: RequestCapture; request: AgentRequest }>
   | Readonly<{ type: 'receive-response'; response: unknown }>
@@ -100,12 +102,6 @@ export async function prepareAgentRequest(
   return result.success ? result.data : null;
 }
 
-function sameBinding(left: AgentRequest['binding'], right: AgentResponse['binding']): boolean {
-  return left.missionBranchId === right.missionBranchId && left.revision === right.revision
-    && left.inputDigest === right.inputDigest && left.schemaVersion === right.schemaVersion
-    && left.plannerVersion === right.plannerVersion;
-}
-
 function matchesPrepared(capture: RequestCapture, request: AgentRequest): boolean {
   return request.requestId === capture.requestId && request.message === capture.message
     && JSON.stringify(request.history) === JSON.stringify(capture.history)
@@ -163,6 +159,12 @@ export function editorSessionReducer(session: EditorSession, action: EditorSessi
       return replaceSession(session, editorReducer(session.editor, { type: 'import-draft', draft: action.draft }), action.missionBranchId);
     case 'load-route':
       return replaceSession(session, editorReducer(session.editor, { type: 'load-draft', draft: action.draft, reviewed: action.reviewed }), action.missionBranchId);
+    case 'cancel-request':
+      return (session.request.kind === 'hashing' || session.request.kind === 'awaiting')
+        && session.request.capture.requestId === action.requestId
+        ? { ...session, request: { kind: 'finished', requestId: action.requestId } } : session;
+    case 'reset-agent':
+      return { ...session, request: { kind: 'idle' }, proposal: null };
     case 'register-request': {
       if (!matchesCapture(session, action.capture)) return session;
       const activeId = session.request.kind === 'idle' ? null
@@ -181,7 +183,7 @@ export function editorSessionReducer(session: EditorSession, action: EditorSessi
       if (session.request.kind !== 'awaiting') return session;
       const response = agentResponseSchema.safeParse(action.response);
       if (!response.success || response.data.requestId !== session.request.request.requestId
-        || !sameBinding(session.request.request.binding, response.data.binding)
+        || !sameAgentBinding(session.request.request.binding, response.data.binding)
         || !matchesCapture(session, session.request.capture)) return session;
       const request = { kind: 'finished', requestId: response.data.requestId } satisfies RequestState;
       if (response.data.outcome.kind !== 'proposed') return { ...session, request };
