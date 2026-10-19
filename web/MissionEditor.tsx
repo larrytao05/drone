@@ -2,11 +2,13 @@
 
 import { useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { analyseDraft } from './mission-input';
-import { createEditorState, editorReducer, isSaved } from './editor';
+import { isSaved } from './editor';
+import { createEditorSession, editorSessionReducer } from './editor-session';
 import { decodeBackup, encodeBackup, readLocalDraft, writeLocalDraft } from './draft-storage';
 import { buildMapGeometry } from './map-geometry';
 import type { LocalReadResult } from './draft-storage';
 import type { MissionDraft } from './editor';
+import type { OrdinaryEditorAction } from './editor-session';
 import type { DraftAnalysis } from './mission-input';
 import type { MapGeometry } from './map-geometry';
 import type { MapSourceAction, MapSourceView } from './map-source';
@@ -19,6 +21,7 @@ import styles from './Editor.module.css';
 type DraftSlotStatus = LocalReadResult['kind'] | 'checking';
 type SaveTransaction = Readonly<{
   draft: MissionDraft;
+  missionBranchId: string;
   revision: number;
   analysis: DraftAnalysis;
   geometry: MapGeometry;
@@ -71,7 +74,10 @@ function saveFailureMessage(error: unknown): string {
 }
 
 export function MissionEditor() {
-  const [state, dispatch] = useReducer(editorReducer, undefined, createEditorState);
+  const [session, sessionDispatch] = useReducer(editorSessionReducer, undefined,
+    () => createEditorSession(globalThis.crypto.randomUUID()));
+  const state = session.editor;
+  const dispatch = (action: OrdinaryEditorAction) => sessionDispatch({ type: 'edit', action });
   const [slotStatus, setSlotStatus] = useState<DraftSlotStatus>('checking');
   const [loadError, setLoadError] = useState<string | null>(null);
   const [importError, setImportError] = useState<string | null>(null);
@@ -79,8 +85,10 @@ export function MissionEditor() {
   const importInput = useRef<HTMLInputElement>(null);
   const importRequest = useRef(0);
   const currentRevision = useRef(state.revision);
+  const currentBranchId = useRef(session.missionBranchId);
   const saveInProgress = useRef(false);
   currentRevision.current = state.revision;
+  currentBranchId.current = session.missionBranchId;
   const analysis = useMemo(() => analyseDraft(state.draft), [state.draft]);
   const geometry = useMemo(() => buildMapGeometry({
     sourcePoints: analysis.sourcePoints,
@@ -103,6 +111,7 @@ export function MissionEditor() {
   }, []);
 
   function loadDraft() {
+    importRequest.current += 1;
     const result = readBrowserDraft();
     setSlotStatus(result.kind);
     if (result.kind !== 'success') {
@@ -110,25 +119,28 @@ export function MissionEditor() {
       return;
     }
     setLoadError(null);
-    dispatch({ type: 'load-draft', draft: result.draft, reviewed: result.reviewed });
+    sessionDispatch({ type: 'load-route', missionBranchId: globalThis.crypto.randomUUID(), draft: result.draft, reviewed: result.reviewed });
   }
 
   async function importBackup(file: File | undefined) {
     if (!file) return;
     const request = ++importRequest.current;
     const revision = state.revision;
+    const missionBranchId = session.missionBranchId;
     setImportError(null);
     try {
       const text = await file.text();
-      if (request !== importRequest.current || revision !== currentRevision.current) return;
+      if (request !== importRequest.current || revision !== currentRevision.current
+        || missionBranchId !== currentBranchId.current) return;
       const result = decodeBackup(text);
       if (!result.ok) {
         setImportError(`The backup is invalid and was not imported: ${result.issues[0]?.message ?? 'Check the backup file.'}`);
         return;
       }
-      dispatch({ type: 'import-draft', draft: result.value });
+      sessionDispatch({ type: 'import-route', missionBranchId: globalThis.crypto.randomUUID(), draft: result.value });
     } catch {
-      if (request === importRequest.current && revision === currentRevision.current) {
+      if (request === importRequest.current && revision === currentRevision.current
+        && missionBranchId === currentBranchId.current) {
         setImportError('The backup file could not be read and was not imported.');
       }
     }
@@ -136,7 +148,7 @@ export function MissionEditor() {
 
   function startNew() {
     importRequest.current += 1;
-    dispatch({ type: 'new' });
+    sessionDispatch({ type: 'new-route', missionBranchId: globalThis.crypto.randomUUID() });
   }
 
   function exportBackup() {
@@ -153,6 +165,7 @@ export function MissionEditor() {
     saveInProgress.current = false;
     setSaveTransaction({
       draft: state.draft,
+      missionBranchId: session.missionBranchId,
       revision: state.revision,
       analysis,
       geometry,
@@ -165,9 +178,10 @@ export function MissionEditor() {
     const transaction = saveTransaction;
     if (transaction === null || saveInProgress.current) return 'keep-open';
 
-    if (transaction.revision !== state.revision) {
+    if (transaction.revision !== state.revision || transaction.missionBranchId !== session.missionBranchId) {
       setSaveTransaction({
         draft: state.draft,
+        missionBranchId: session.missionBranchId,
         revision: state.revision,
         analysis,
         geometry,

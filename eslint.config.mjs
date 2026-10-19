@@ -42,6 +42,18 @@ export default tseslint.config(
     }
   },
   {
+    files: ["web/editor-session.ts"],
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        {
+          paths: ["@drone/mission-planner/agent"],
+          patterns: ["**/core.js", "**/core.ts", "**/core"]
+        }
+      ]
+    }
+  },
+  {
     ignores: ["dist/**", ".next/**", ".next-map-*/**", "next-env.d.ts", "node_modules/**", "playwright-report/**", "test-results/**", "public/maplibre-gl-worker.mjs"]
   }
 );

@@ -1,13 +1,14 @@
 import type { Dispatch } from 'react';
 import type { DraftAnalysis } from './mission-input';
-import type { EditorAction, EditorState } from './editor';
+import type { EditorState } from './editor';
+import type { OrdinaryEditorAction } from './editor-session';
 import { WaypointList } from './WaypointList';
 import styles from './Editor.module.css';
 
 type InspectorProps = Readonly<{
   state: EditorState;
   analysis: DraftAnalysis;
-  dispatch: Dispatch<EditorAction>;
+  dispatch: Dispatch<OrdinaryEditorAction>;
 }>;
 
 export function Inspector({ state, analysis, dispatch }: InspectorProps) {
