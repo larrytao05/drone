@@ -768,7 +768,8 @@
   min-height: 2.5rem;
 }
 
-.proposalActions button:focus-visible {
+.proposalActions button:focus-visible,
+.previewTableScroll:focus-visible {
   outline: 3px solid var(--accent);
   outline-offset: 2px;
 }

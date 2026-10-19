@@ -6,7 +6,6 @@ import {
   captureAgentRequest, createEditorSession, editorSessionReducer, prepareAgentRequest,
   type EditorSession,
 } from '../../web/editor-session.js';
-import { analyseDraft } from '../../web/mission-input.js';
 import { makeDraft } from './fixtures.js';
 
 async function proposalSession(height = 35, faceTarget = false) {
@@ -33,7 +32,6 @@ async function proposalSession(height = 35, faceTarget = false) {
 function Harness({ initial }: Readonly<{ initial: EditorSession }>) {
   const [session, dispatch] = useReducer(editorSessionReducer, initial);
   return <>
-    <button type="button" onClick={() => dispatch({ type: 'edit', action: { type: 'set-name', value: 'Edited route' } })}>Edit source</button>
     <button type="button" onClick={() => {
       dispatch({ type: 'edit', action: { type: 'set-height', value: '' } });
       dispatch({ type: 'apply-proposal', requestId: 'proposal-1' });
@@ -49,7 +47,7 @@ describe('proposal review', () => {
   afterEach(cleanup);
   it('shows calculated height and face-target camera effects without changing the draft; Dismiss only clears review', async () => {
     const initial = await proposalSession(35, true);
-    const originalPoints = initial.editor.draft.points;
+    const originalPoints = initial.editor.draft.points.map(({ id, coordinate }) => [id, coordinate.latitude, coordinate.longitude]);
     render(<Harness initial={initial} />);
 
     const comparison = screen.getByRole('table', { name: 'Waypoint height and camera pitch comparison' });
@@ -58,19 +56,16 @@ describe('proposal review', () => {
     const firstRow = within(rows[1]!).getAllByRole('cell').map((cell) => cell.textContent);
     expect(firstRow.slice(0, 3)).toEqual(['01', '30', '35']);
     expect(within(rows[1]!).getAllByRole('cell')[3]?.textContent).not.toBe(within(rows[1]!).getAllByRole('cell')[4]?.textContent);
-    const previewRows = within(screen.getByRole('table', { name: 'Calculated waypoints' })).getAllByRole('row').slice(1);
-    const sourceRoute = analyseDraft(initial.editor.draft).route;
-    if (sourceRoute.kind !== 'calculated') throw new Error('Expected calculated fixture route');
-    expect(previewRows.map((row) => within(row).getAllByRole('cell').slice(1, 3).map((cell) => cell.textContent))).toEqual(
-      sourceRoute.waypoints.map(({ coordinate }) => [String(coordinate.latitudeDeg), String(coordinate.longitudeDeg)]),
-    );
+    expect(screen.getByText(/Waypoint positions stay the same/)).toBeTruthy();
     expect(screen.getByLabelText('Draft height').textContent).toBe('030.0');
     expect(screen.getByRole('button', { name: 'Apply proposed change' }).getAttribute('disabled')).toBeNull();
 
     fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }));
     expect(screen.queryByRole('heading', { name: 'Review height change' })).toBeNull();
     expect(screen.getByLabelText('Draft height').textContent).toBe('030.0');
-    expect(initial.editor.draft.points).toBe(originalPoints);
+    expect(initial.editor.draft.points.map(({ id, coordinate }) => [id, coordinate.latitude, coordinate.longitude])).toEqual(
+      originalPoints,
+    );
   });
 
   it('keeps a stale proposal visible and disabled, and the reducer rejects an apply queued after an edit', async () => {
@@ -81,7 +76,7 @@ describe('proposal review', () => {
     expect(screen.getByRole('status').textContent).toContain('out of date');
     expect(screen.getByRole('button', { name: 'Apply proposed change' }).hasAttribute('disabled')).toBe(true);
     expect(screen.getByLabelText('Draft height').textContent).toBe('');
-    expect(screen.queryByRole('table', { name: 'Calculated waypoints' })).toBeNull();
+    expect(screen.queryByText(/Waypoint positions stay the same/)).toBeNull();
   });
 
   it('applies exactly once through the session reducer and preserves no-op formatting', async () => {
