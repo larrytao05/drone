@@ -4,7 +4,7 @@ This project builds an LLM-powered flight planner for a DJI drone.
 
 This project is developing a mission planner for DJI drones. It does not control an aircraft.
 
-Status: the deterministic planner, local route editor, bounded Node agent runtime and private chat endpoint are implemented. The editor does not call the agent yet. Orbit editing in the browser and DJI flight-file export remain future work; the broader system design below remains proposed. The separate KMZ round-trip experiment remains unchanged.
+Status: the deterministic planner, local route editor, bounded Node agent runtime and private chat endpoint are implemented. The editor can request a height proposal and apply it after explicit review. Orbit editing in the browser and DJI flight-file export remain future work; the broader system design below remains proposed. The separate KMZ round-trip experiment remains unchanged.
 
 ## Current route editor
 
@@ -60,6 +60,16 @@ The focused browser commands start and stop their own servers:
 
 Only Chromium is configured for browser checks. Managed local checks verify the source-free map and editor behaviour. Provider checks use the configured key to verify live imagery and attribution.
 
+## Use the mission assistant
+
+Complete the route's waypoint coordinates, height and framing settings, then sign in under **Mission assistant** with the configured assistant password. Takeoff is optional for chat and remains required before you mark a route as reviewed. If assistant access is unavailable, manual editing remains usable.
+
+Send a message to request a height change. The editor calculates the comparison locally. Select **Apply proposed change** to update the height, or **Dismiss** to keep the source. Editing the source makes an existing proposal stale. Applying a change does not save the route.
+
+**Cancel request** retires a pending result. **Retry same request** explicitly checks the original request after a connection or service failure. It reuses the original request ID and body within the server's retry window. A terminal assistant failure requires a new message. **Clear conversation**, **New**, successful import or load, and authentication changes discard pending results and proposals. Conversation text stays in memory and is lost on reload.
+
+The managed local browser suites include fake-endpoint assistant journeys and make no paid model calls.
+
 ## Private chat endpoint
 
 `POST /api/agent/session` accepts JSON actions `status`, `login` with a `password`, and `logout`. `status` is the browser bootstrap request. After login, it returns `{ authenticated: true, epoch, serverNow, retryWindowMs }`; without a valid session, it returns `{ authenticated: false }`. Import `agentSessionRequestSchema`, `agentSessionResponseSchema` and `formatAgentRequestId` from `@drone/mission-planner/agent-contract` for browser integration. Every session request uses `POST` with JSON and an exact `Origin` header. The browser chat route is `POST /api/agent`. Both routes require the configured origin; chat also requires a valid session cookie.
@@ -74,7 +84,7 @@ Browser request IDs have the form `epoch.createdAt.uuid`. Use the authenticated 
 
 The request contains a request ID, user message, optional chat history, a complete mission snapshot and a caller-supplied binding. The binding carries the mission branch ID, revision, canonical input digest, schema version and planner version. The response echoes the request ID and binding for every parsed request outcome. A proposal contains a validated change and tool activity; the client calculates candidate waypoints locally from its snapshot. The route accepts height and orbit-radius changes. It never applies a proposal or controls a drone. The endpoint cannot verify the current editor revision. A client must compare the full binding against its pending snapshot and current revision before it displays or applies a result.
 
-Requests must use JSON and fit within 64 KiB. Request ID, message, history and binding data must fit within 24,000 bytes. The browser route checks server-owned schema and planner versions and recomputes the snapshot digest before admitting work. Each turn allows at most 4 model calls, 6 tool calls and 30 seconds. The provider makes no automatic SDK retries and uses the OpenAI Responses API with `store: false`. The model receives no snapshot coordinates in the generated context or tool results, but user-written text can contain location data. The server does not know the current editor revision or accept a proposal on the editor's behalf. Browser transport, visible chat, streaming and persistence are separate work.
+Requests must use JSON and fit within 64 KiB. Request ID, message, history and binding data must fit within 24,000 bytes. The browser route checks server-owned schema and planner versions and recomputes the snapshot digest before admitting work. Each turn allows at most 4 model calls, 6 tool calls and 30 seconds. The provider makes no automatic SDK retries and uses the OpenAI Responses API with `store: false`. The model receives no snapshot coordinates in the generated context or tool results, but user-written text can contain location data. The server does not know the current editor revision or accept a proposal on the editor's behalf. The editor uses the browser client for session access and text-only conversation. Streaming and chat persistence are not implemented.
 
 ## Agent runtime contract
 
