@@ -39,6 +39,12 @@ export const agentBindingSchema = z.strictObject({
 });
 export type AgentBinding = z.infer<typeof agentBindingSchema>;
 
+export function sameAgentBinding(left: AgentBinding, right: AgentBinding): boolean {
+  return left.missionBranchId === right.missionBranchId && left.revision === right.revision
+    && left.inputDigest === right.inputDigest && left.schemaVersion === right.schemaVersion
+    && left.plannerVersion === right.plannerVersion;
+}
+
 export const agentMessageSchema = z.string().trim().min(1).max(4_000);
 export const agentHistorySchema = z.array(z.strictObject({
   role: z.enum(["user", "assistant"]),
