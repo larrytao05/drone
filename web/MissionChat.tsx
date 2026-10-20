@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import type { AgentClientState, createAgentClient } from './agent-client';
+import type { AgentClientState, AgentFailure, AgentProgressEvent, createAgentClient } from './agent-client';
 import type { DraftAnalysis } from './mission-input';
 import styles from './Editor.module.css';
 
@@ -15,14 +15,46 @@ type MissionChatProps = Readonly<{
   onSession: (action: Parameters<ReturnType<typeof createAgentClient>['session']>[0]) => void;
 }>;
 
+function diagnosticMessage(diagnostic: AgentFailure | undefined): string {
+  const code = diagnostic?.code;
+  switch (code) {
+    case 'provider-auth': return 'The model provider denied access. Check the configured API key and permissions, then send a new message.';
+    case 'provider-rate-limit': return 'The model provider is limiting requests. Wait a while, then send a new message.';
+    case 'provider-unavailable': return 'The model provider is unavailable. Try a new message later.';
+    case 'model-unavailable': return 'The configured model is unavailable for this request. Check the provider and model settings, then send a new message.';
+    case 'provider-response': return 'The model provider returned an invalid response. Send a new message to try again.';
+    case 'provider-error': return 'The model call failed before the assistant could finish. Check provider availability and configuration, then send a new message.';
+    case 'invalid-tool-call': return 'The model did not finish a valid action. Send the message again.';
+    case 'tool-execution': return 'The assistant could not evaluate this route change. Check the route and send a new message.';
+    case 'output-limit': return 'The model response was cut short. Send a shorter, more specific message.';
+    case 'internal-error': return 'The assistant encountered an internal error. Send a new message and use the request reference below if it continues.';
+    case undefined: return 'The assistant could not complete this request. Send a new message to try again.';
+    default: { const exhaustive: never = code; return exhaustive; }
+  }
+}
+
+function eventMessage(event: AgentProgressEvent): string {
+  if (event.kind === 'model-start') return 'Waiting for model response';
+  if (event.kind === 'model-end') return 'Model response received';
+  if (event.kind === 'terminal') return 'Request finished';
+  if ('tool' in event) {
+    const tool = {
+      get_mission_context: 'Mission context', preview_change: 'Change preview',
+      propose_change: 'Proposal', ask_clarification: 'Clarification',
+    }[event.tool];
+    return `${tool} ${event.kind === 'tool-start' ? 'started' : event.kind === 'tool-end' ? 'finished' : 'failed'}`;
+  }
+  return 'Model activity';
+}
+
 function outcomeMessage(outcome: Extract<AgentClientState['turn'], { kind: 'completed' }>['response']['outcome']): string | null {
   switch (outcome.kind) {
     case 'answered':
     case 'needs-input':
     case 'proposed': return null;
-    case 'failed': return 'The assistant could not complete this request. Send a new message to try again.';
-    case 'unavailable': return 'The assistant is unavailable. Try a new message later.';
-    case 'cancelled': return 'The assistant cancelled this request. You can send a new message.';
+    case 'failed': return diagnosticMessage(outcome.diagnostic);
+    case 'unavailable': return 'The assistant is not configured. Check the model provider settings, then send a new message.';
+    case 'cancelled': return 'This request stopped. You can send a new message.';
     case 'deadline': return 'The assistant took too long. You can send a new message.';
     case 'budget-exceeded': return 'The assistant stopped before it could finish. Try a more specific message.';
     default: { const exhaustive: never = outcome; return exhaustive; }
@@ -36,9 +68,14 @@ export function MissionChat({ analysis, state, pending, error, onSend, onCancel,
   const checking = state.session.kind === 'unknown' || state.session.kind === 'loading';
   const valid = analysis.route.kind === 'calculated';
   const terminal = state.turn.kind === 'completed' ? outcomeMessage(state.turn.response.outcome) : null;
-  const status = error ?? (pending ? 'Preparing your request and waiting for the assistant.'
+  const progress = state.turn.kind === 'loading' || state.turn.kind === 'completed' ? state.turn.progress : null;
+  const lastEvent = progress?.events.at(-1);
+  const requestId = state.turn.kind === 'loading' ? state.turn.requestId
+    : state.turn.kind === 'completed' ? state.turn.response.requestId
+      : state.turn.kind === 'error' ? state.turn.requestId : undefined;
+  const status = error ?? (pending ? lastEvent ? eventMessage(lastEvent) : 'Starting assistant request.'
     : state.turn.kind === 'error' ? state.turn.error.message
-      : state.turn.kind === 'cancelled' ? 'Request cancelled. You can send a new message.' : terminal);
+      : state.turn.kind === 'cancelled' ? 'Stopped waiting for this request. You can send a new message.' : terminal);
 
   return (
     <section className={styles.missionChat} aria-labelledby="mission-chat-title">
@@ -96,6 +133,19 @@ export function MissionChat({ analysis, state, pending, error, onSend, onCancel,
             : 'Complete the waypoint coordinates, height and framing settings before sending. Takeoff is optional for chat.'}
         </p>
         {status !== null && <p className={styles.chatStatus} aria-label="Assistant request status" role="status">{status}</p>}
+        {pending && state.turn.kind === 'loading' && <p className={styles.chatElapsed}>Elapsed {Math.floor(state.turn.elapsedMs / 1_000)} seconds</p>}
+        {requestId && <details className={styles.chatDetails}>
+          <summary>Request details</summary>
+          <p>Reference: <code>{requestId}</code></p>
+          {state.turn.kind === 'completed' && <p>Duration: {(state.turn.elapsedMs / 1_000).toFixed(1)} seconds</p>}
+          {state.turn.kind === 'completed' && state.turn.response.outcome.kind === 'failed' && state.turn.response.outcome.diagnostic && <p>
+            Diagnosis: <code>{state.turn.response.outcome.diagnostic.code}</code>
+            {state.turn.response.outcome.diagnostic.status !== undefined && ` · Provider status: ${state.turn.response.outcome.diagnostic.status}`}
+          </p>}
+          {progress && progress.events.length > 0 && <ol aria-label="Assistant activity">
+            {progress.events.map((event, index) => <li key={index}>{eventMessage(event)} · {Math.floor(event.elapsedMs / 1_000)}s</li>)}
+          </ol>}
+        </details>}
         <div className={styles.chatActions}>
           {pending && <button className={styles.quietButton} onClick={onCancel} type="button">Cancel request</button>}
           {!pending && state.turn.kind === 'error' && state.turn.retryAvailable && <button className={styles.secondaryButton} onClick={onRetry} type="button">Retry same request</button>}

@@ -26,7 +26,7 @@ export function getConfiguredModel(
     const modelId = config.OPENROUTER_MODEL?.trim() || "openrouter/free";
     if (!apiKey || (modelId !== "openrouter/free" && !modelId.endsWith(":free"))) return undefined;
 
-    const provider = createOpenAI({ apiKey, baseURL: "https://openrouter.ai/api/v1", fetch: fetcher });
+    const provider = createOpenAI({ name: "openrouter", apiKey, baseURL: "https://openrouter.ai/api/v1", fetch: fetcher });
     return provider.chat(modelId);
   }
   if (selectedProvider !== "openai") return undefined;

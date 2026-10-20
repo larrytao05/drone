@@ -119,6 +119,72 @@ describe("browser agent boundary", () => {
     expect(fake.doGenerateCalls).toHaveLength(1);
   });
 
+  it("reports bounded progress only for an authenticated matching admitted request", async () => {
+    let now = NOW;
+    let release: (() => void) | undefined;
+    const pending = new Promise<void>((resolve) => { release = resolve; });
+    const fake = new MockLanguageModelV3({ doGenerate: async () => { await pending; return modelResponse; } });
+    const getModel = vi.fn(() => fake);
+    const handlers = createBrowserAgentHandlers({ getEnvironment: environment, getModel, epoch: EPOCH, now: () => now });
+    const cookie = await sessionCookie(handlers.session);
+    const status = (requestId = id(), nextBinding = binding, nextCookie = cookie, origin = ORIGIN) => handlers.progress(post("/api/agent/progress", { requestId, binding: nextBinding }, nextCookie, origin));
+    expect((await status()).status).toBe(404);
+    expect((await status(id(), binding, "")).status).toBe(401);
+    expect((await status(id(), binding, cookie, "http://evil.test")).status).toBe(403);
+    const running = handlers.chat(post("/api/agent", payload(), cookie));
+    await vi.waitFor(() => expect(fake.doGenerateCalls).toHaveLength(1));
+    now += 1_500;
+    expect((await status(id(), { ...binding, revision: 3 })).status).toBe(409);
+    const progress = await read(await status());
+    expect(progress).toMatchObject({ status: 200, body: { requestId: id(), binding, state: "running", elapsedMs: 1_500, events: [{ kind: "model-start" }] } });
+    expect(getModel).toHaveBeenCalledTimes(1);
+    release?.();
+    expect((await running).status).toBe(200);
+    now += 1_000;
+    expect(await read(await status())).toMatchObject({ status: 200, body: { state: "completed", elapsedMs: 1_500 } });
+    expect(getModel).toHaveBeenCalledTimes(1);
+    now = NOW + 120_000;
+    expect((await status()).status).toBe(404);
+  });
+
+  it("normalizes a model height string before returning a browser proposal", async () => {
+    const calls: { toolName: string; toolCallId: string; input: string }[] = [];
+    const fake = new MockLanguageModelV3({ doGenerate: async (options) => {
+      const prompt = JSON.stringify(options.prompt);
+      const turn = calls.length + 1;
+      const toolName = turn === 1 ? "get_mission_context" : turn === 2 ? "preview_change" : "propose_change";
+      const input = turn === 1 ? {} : turn === 2
+        ? { kind: "set-height", heightAboveTakeoffM: "40" }
+        : { previewId: prompt.match(/previewId.{1,8}([0-9a-f-]{36})/)?.[1] };
+      const toolCallId = `browser-call-${turn}`;
+      calls.push({ toolName, toolCallId, input: JSON.stringify(input) });
+      return {
+        content: [{ type: "tool-call", toolName, toolCallId, input: JSON.stringify(input) }], warnings: [],
+        finishReason: { unified: "tool-calls", raw: "tool-calls" },
+        usage: { inputTokens: { total: 5, noCache: 5, cacheRead: 0, cacheWrite: 0 }, outputTokens: { total: 5, text: 5, reasoning: 0 } },
+      };
+    } });
+    const handlers = createBrowserAgentHandlers({ getEnvironment: environment, getModel: () => fake, epoch: EPOCH, now: () => NOW });
+    const cookie = await sessionCookie(handlers.session);
+    const result = await read(await handlers.chat(post("/api/agent", payload(), cookie)));
+    expect(result.status).toBe(200);
+    expect(result.body).toMatchObject({ outcome: { kind: "proposed", change: { kind: "set-height", heightAboveTakeoffM: 40 } } });
+    expect(calls).toHaveLength(3);
+    expect(calls[2]?.input).toMatch(/previewId/);
+  });
+
+  it("logs safe request, stage and provider metadata when provider errors contain secrets", async () => {
+    const secret = "SECRET_SENTINEL_40.123456";
+    const fake = new MockLanguageModelV3({ doGenerate: async () => { throw new Error(secret); } });
+    const log = vi.fn();
+    const handlers = createBrowserAgentHandlers({ getEnvironment: environment, getModel: () => fake, log, epoch: EPOCH, now: () => NOW });
+    const cookie = await sessionCookie(handlers.session);
+    const result = await read(await handlers.chat(post("/api/agent", { ...payload(), message: secret }, cookie)));
+    expect(result.body).toMatchObject({ outcome: { kind: "failed", diagnostic: { code: "provider-error" } } });
+    expect(log).toHaveBeenCalledWith(expect.objectContaining({ event: "agent-result", requestId: id(), code: "provider-error" }));
+    expect(JSON.stringify({ log: log.mock.calls, result })).not.toContain(secret);
+  });
+
   it("keeps admitted work after a disconnect and releases concurrency on completion", async () => {
     let release: (() => void) | undefined;
     const pending = new Promise<void>((resolve) => { release = resolve; });

@@ -1,8 +1,9 @@
 import { MockLanguageModelV3 } from "ai/test";
 import { generateText } from "ai";
 import { describe, expect, it, vi } from "vitest";
-import { createChatHandler } from "../web/server/chat-handler.js";
+import { agentProvider, createChatHandler } from "../web/server/chat-handler.js";
 import { getConfiguredModel } from "../web/server/model.js";
+import { modelMissionChangeSchema } from "../web/server/mission-agent.js";
 import { previewMissionChange, digestMissionInput, AGENT_SCHEMA_VERSION, PLANNER_VERSION, agentResponseSchema } from "../src/agent-contract.js";
 import type { MissionInput } from "../src/index.js";
 
@@ -29,6 +30,20 @@ function previewId(prompt: unknown): string {
   if (!id) throw new Error("No preview ID");
   return id;
 }
+
+describe("model mission change schema", () => {
+  it("normalizes only bounded JSON numeric literals and retains domain validation", () => {
+    expect(modelMissionChangeSchema.parse({ kind: "set-height", heightAboveTakeoffM: "4.0e1" })).toEqual({ kind: "set-height", heightAboveTakeoffM: 40 });
+    expect(modelMissionChangeSchema.parse({ kind: "set-orbit-radius", radiusM: "4.5e1" })).toEqual({ kind: "set-orbit-radius", radiusM: 45 });
+    for (const value of ["", " ", "40 ", "40\n", "0x28", "40m", "NaN", "Infinity", "1e999", "1".repeat(65), true, null, {}]) {
+      expect(modelMissionChangeSchema.safeParse({ kind: "set-height", heightAboveTakeoffM: value }).success).toBe(false);
+    }
+    expect(modelMissionChangeSchema.safeParse({ kind: "set-height", heightAboveTakeoffM: "40", extra: true }).success).toBe(false);
+    expect(modelMissionChangeSchema.safeParse({ kind: "set-orbit-radius", radiusM: "0" }).success).toBe(false);
+    const invalidPlan = previewMissionChange(snapshot, { kind: "set-orbit-radius", radiusM: 15_000 });
+    expect(invalidPlan.kind).toBe("invalid");
+  });
+});
 
 describe("private chat HTTP handler", () => {
   it("rejects unauthorised and malformed requests before constructing a model", async () => {
@@ -116,7 +131,18 @@ describe("private chat HTTP handler", () => {
   it("returns a safe provider failure", async () => {
     const model = new MockLanguageModelV3({ doGenerate: async (): Promise<ModelResponse> => { throw new Error("secret-provider-error"); } });
     const result = await read(await handler(model)(request(payload)));
-    expect(result).toEqual({ status: 502, body: { requestId: "request-1", binding, outcome: { kind: "failed", activity: [], message: "The model could not complete this request." } }, cache: "no-store" });
+    expect(result).toEqual({ status: 502, body: { requestId: "request-1", binding, outcome: { kind: "failed", activity: [], diagnostic: { code: "provider-error" }, message: "The model could not complete this request." } }, cache: "no-store" });
+  });
+
+  it("hashes arbitrary bearer request references and tolerates logging failures", async () => {
+    const model = new MockLanguageModelV3({ doGenerate: response([{ type: "text", text: "Done" }], "stop") });
+    const log = vi.fn();
+    const handle = createChatHandler({ getAccessToken: () => "private-token", getModel: () => model, log });
+    expect((await handle(request({ ...payload, requestId: "SECRET_REQUEST_ID" }))).status).toBe(200);
+    expect(log.mock.calls[0]?.[0]?.requestId).toMatch(/^ref:[0-9a-f]{16}$/);
+    expect(JSON.stringify(log.mock.calls)).not.toContain("SECRET_REQUEST_ID");
+    const throwing = createChatHandler({ getAccessToken: () => "private-token", getModel: () => model, log: () => { throw new Error("logger failed"); } });
+    expect((await throwing(request(payload))).status).toBe(200);
   });
 
   it("retains completed tool activity after a provider failure", async () => {
@@ -133,6 +159,7 @@ describe("private chat HTTP handler", () => {
           { tool: "get_mission_context", status: "started" },
           { tool: "get_mission_context", status: "succeeded" },
         ],
+        diagnostic: { code: "provider-error" },
         message: "The model could not complete this request.",
       } },
       cache: "no-store",
@@ -164,6 +191,35 @@ describe("OpenAI provider wiring", () => {
     await expect(generateText({ model, prompt: "hello", maxRetries: 0 })).rejects.toThrow();
     expect(captured).toMatchObject({ url: "https://api.openai.com/v1/responses", authorization: "Bearer fixture-key", body: { model: "fixture-model", store: false } });
     expect(getConfiguredModel({}, fakeFetch)).toBeUndefined();
+  });
+});
+
+describe("OpenRouter numeric model arguments", () => {
+  it("previews a captured height string and explicitly proposes its returned preview", async () => {
+    const requests: Record<string, unknown>[] = [];
+    const fakeFetch: typeof fetch = async (_input, init) => {
+      const body: Record<string, unknown> = JSON.parse(String(init?.body));
+      requests.push(body);
+      const turn = requests.length;
+      const toolCall = turn === 1
+        ? { id: "call-context", type: "function", function: { name: "get_mission_context", arguments: "{}" } }
+        : turn === 2
+          ? { id: "call-preview", type: "function", function: { name: "preview_change", arguments: JSON.stringify({ kind: "set-height", heightAboveTakeoffM: "40" }) } }
+          : { id: "call-propose", type: "function", function: { name: "propose_change", arguments: JSON.stringify({ previewId: previewId(body) }) } };
+      return new Response(JSON.stringify({
+        id: `completion-${turn}`, object: "chat.completion", created: 1, model: "openrouter/free",
+        choices: [{ index: 0, message: { role: "assistant", content: null, tool_calls: [toolCall] }, finish_reason: "tool_calls" }],
+        usage: { prompt_tokens: 5, completion_tokens: 5, total_tokens: 10 },
+      }), { headers: { "content-type": "application/json" } });
+    };
+    const model = getConfiguredModel({ AGENT_MODEL_PROVIDER: "openrouter", OPENROUTER_API_KEY: "router-fixture-key", OPENROUTER_MODEL: "openrouter/free" }, fakeFetch);
+    if (!model) throw new Error("Expected OpenRouter model");
+    const original = JSON.stringify(payload.snapshot);
+    const result = await read(await createChatHandler({ getAccessToken: () => "private-token", getModel: () => model })(request(payload)));
+    expect(result.status).toBe(200);
+    expect(result.body).toMatchObject({ outcome: { kind: "proposed", change: { kind: "set-height", heightAboveTakeoffM: 40 } } });
+    expect(requests).toHaveLength(3);
+    expect(JSON.stringify(payload.snapshot)).toBe(original);
   });
 });
 
@@ -207,6 +263,23 @@ describe("OpenRouter provider wiring", () => {
     expect(requests.every(({ authorization }) => authorization === "Bearer router-fixture-key")).toBe(true);
     expect(requests.map(({ body }) => body.model)).toEqual(Array.from({ length: 3 }, () => "openrouter/free"));
     expect(requests[0]?.body.tools).toEqual(expect.arrayContaining([expect.objectContaining({ function: expect.objectContaining({ name: "get_mission_context" }) })]));
+    expect(requests[0]?.body.tools).toEqual(expect.arrayContaining([
+      expect.objectContaining({ function: expect.objectContaining({
+        name: "preview_change",
+        parameters: expect.objectContaining({ oneOf: expect.arrayContaining([
+          expect.objectContaining({ properties: expect.objectContaining({
+            heightAboveTakeoffM: expect.objectContaining({ anyOf: expect.arrayContaining([
+              { type: "number" }, expect.objectContaining({ type: "string", maxLength: 64, pattern: expect.stringContaining("0|[1-9]") }),
+            ]) }),
+          }) }),
+          expect.objectContaining({ properties: expect.objectContaining({
+            radiusM: expect.objectContaining({ anyOf: expect.arrayContaining([
+              { type: "number", exclusiveMinimum: 0 }, expect.objectContaining({ type: "string", maxLength: 64, pattern: expect.stringContaining("0|[1-9]") }),
+            ]) }),
+          }) }),
+        ]) }),
+      }) }),
+    ]));
     expect(JSON.stringify(requests[1]?.body.messages)).toContain('"role":"tool"');
     expect(JSON.stringify(requests[1]?.body.messages)).toContain("call-context");
     expect(JSON.stringify(requests[2]?.body.messages)).toContain('"role":"tool"');
@@ -219,6 +292,7 @@ describe("OpenRouter provider wiring", () => {
     const defaultModel = getConfiguredModel({ AGENT_MODEL_PROVIDER: "openrouter", OPENROUTER_API_KEY: "fixture-key" }, fakeFetch);
     if (!defaultModel || typeof defaultModel === "string") throw new Error("Expected model object");
     expect(defaultModel?.modelId).toBe("openrouter/free");
+    expect(agentProvider(defaultModel)).toBe("openrouter");
     expect(getConfiguredModel({ AGENT_MODEL_PROVIDER: "openrouter", OPENROUTER_API_KEY: "fixture-key", OPENROUTER_MODEL: "openai/gpt-4o" }, fakeFetch)).toBeUndefined();
     expect(getConfiguredModel({ AGENT_MODEL_PROVIDER: "openrouter", OPENROUTER_API_KEY: "fixture-key", OPENROUTER_MODEL: "unknown-model:free:extra" }, fakeFetch)).toBeUndefined();
     expect(getConfiguredModel({ AGENT_MODEL_PROVIDER: "openrouter", OPENROUTER_MODEL: "openrouter/free" }, fakeFetch)).toBeUndefined();
