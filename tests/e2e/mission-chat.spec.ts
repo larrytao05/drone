@@ -112,7 +112,7 @@ test('Cancel and pending source edits reject delayed responses and allow a new u
   const net = await openChat(page);
   const cancelled = await send(page, net, 'Cancelled message');
   await page.getByRole('button', { name: 'Cancel request' }).click();
-  await expect(page.getByText(/Request cancelled/)).toBeVisible();
+  await expect(page.getByText(/Stopped waiting for this request/)).toBeVisible();
   const edited = await send(page, net, 'Retired by editing');
   await heightInput(page).fill('33');
   const current = await send(page, net, 'Current message');
@@ -181,6 +181,32 @@ test('wrong binding is rejected and provider failure offers only an explicit imm
   await reply(terminal, { requestId: terminal.request.requestId, binding: terminal.request.binding, outcome: { kind: 'failed', activity: [] } });
   await expect(page.getByText(/could not complete this request/)).toBeVisible();
   await expect(page.getByRole('button', { name: 'Retry same request' })).toHaveCount(0);
+});
+
+test('live model stage and safe provider failure remain reviewable', async ({ page }) => {
+  const net = await openChat(page);
+  await page.route('**/api/agent/progress', async (route) => {
+    const { requestId, binding } = route.request().postDataJSON();
+    await route.fulfill({ json: {
+      requestId, binding, state: 'running', elapsedMs: 1_200,
+      events: [{ kind: 'model-start', elapsedMs: 100 }],
+    } });
+  });
+  const turn = await send(page, net, 'Raise the route height');
+  await expect(page.getByRole('status', { name: 'Assistant request status' })).toHaveText('Waiting for model response');
+  await expect(page.getByText(/Elapsed \d+ seconds/)).toBeVisible();
+  await page.getByText('Request details').click();
+  await expect(page.getByRole('list', { name: 'Assistant activity' })).toContainText('Waiting for model response');
+  await turn.route.fulfill({ status: 502, json: {
+    requestId: turn.request.requestId, binding: turn.request.binding,
+    outcome: { kind: 'failed', activity: [], diagnostic: { code: 'provider-rate-limit', status: 429 } },
+  } });
+  await expect(page.getByRole('status', { name: 'Assistant request status' })).toContainText('model provider is limiting requests');
+  await expect(page.getByText('Diagnosis:')).toContainText('provider-rate-limit');
+  await expect(page.getByText('Diagnosis:')).toContainText('Provider status: 429');
+  await expect(page.getByText(/Duration: \d+\.\d seconds/)).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Retry same request' })).toHaveCount(0);
+  await page.screenshot({ path: '/tmp/drone-agent-observability.png', fullPage: true });
 });
 
 test('a no-op preserves raw formatting, review and saved source; a pending save remains explicit', async ({ page }) => {

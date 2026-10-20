@@ -1,17 +1,42 @@
-import { timingSafeEqual } from "node:crypto";
+import { createHash, timingSafeEqual } from "node:crypto";
 import { runAgentTurn, type AgentOutcome } from "@drone/mission-planner/agent";
 import {
-  agentRequestSchema, agentResponseSchema, missionChangeSchema, previewMissionChange,
-  type AgentRequest, type MissionCandidate, type MissionChange,
+  agentRequestIdSchema, agentRequestSchema, agentResponseSchema, previewMissionChange,
+  type AgentActivity, type AgentFailure, type AgentProgressEvent, type AgentRequest, type MissionCandidate, type MissionChange,
 } from "@drone/mission-planner/agent-contract";
 import type { LanguageModel } from "ai";
-import { describeMission } from "./mission-agent.ts";
+import { describeMission, modelMissionChangeSchema } from "./mission-agent.ts";
 
 const MAX_BODY_BYTES = 64 * 1024;
 type ChatHandlerOptions = Readonly<{
   getAccessToken: () => string | undefined;
   getModel: () => LanguageModel | undefined;
+  log?: (event: AgentLogEvent) => void;
 }>;
+export type AgentLogEvent = Readonly<{
+  event: "agent-progress" | "agent-result";
+  requestId: string;
+  elapsedMs: number;
+  provider: "openai" | "openrouter" | "other" | "unavailable";
+  stage?: AgentProgressEvent["kind"];
+  tool?: AgentActivity["tool"];
+  outcome?: string;
+  code?: AgentFailure["code"] | undefined;
+  status?: number | undefined;
+}>;
+
+export function agentProvider(model: LanguageModel | undefined): AgentLogEvent["provider"] {
+  if (!model) return "unavailable";
+  if (typeof model !== "string" && model.provider.startsWith("openrouter.")) return "openrouter";
+  if (typeof model !== "string" && model.provider.startsWith("openai.")) return "openai";
+  return "other";
+}
+
+export function logAgentEvent(event: AgentLogEvent, log: (event: AgentLogEvent) => void = (value) => { console.error(JSON.stringify(value)); }): void {
+  const requestId = agentRequestIdSchema.safeParse(event.requestId).success
+    ? event.requestId : `ref:${createHash("sha256").update(event.requestId).digest("hex").slice(0, 16)}`;
+  try { log({ ...event, requestId }); } catch { return; }
+}
 
 export function json(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), {
@@ -114,7 +139,7 @@ export function outcomeResponse(outcome: AgentOutcome<MissionChange, MissionCand
   }
 }
 
-export function createChatHandler({ getAccessToken, getModel }: ChatHandlerOptions): (request: Request) => Promise<Response> {
+export function createChatHandler({ getAccessToken, getModel, log }: ChatHandlerOptions): (request: Request) => Promise<Response> {
   return async (request) => {
     let accessToken: string | undefined;
     try {
@@ -138,13 +163,18 @@ export function createChatHandler({ getAccessToken, getModel }: ChatHandlerOptio
     if (!parsed.success) return json(400, { kind: "invalid-request" });
     if (request.signal.aborted) return responseEnvelope(499, { kind: "cancelled", activity: [] }, parsed.data);
 
+    const startedAt = Date.now();
     let model: LanguageModel | undefined;
     try {
       model = getModel();
     } catch {
-      return responseEnvelope(502, { kind: "failed", activity: [], message: "The model could not complete this request." }, parsed.data);
+      logAgentEvent({ event: "agent-result", requestId: parsed.data.requestId, elapsedMs: Date.now() - startedAt, provider: "unavailable", outcome: "failed", code: "internal-error", status: 502 }, log);
+      return responseEnvelope(502, { kind: "failed", activity: [], diagnostic: { code: "internal-error" } }, parsed.data);
     }
-    if (!model) return responseEnvelope(503, { kind: "unavailable", activity: [] }, parsed.data);
+    if (!model) {
+      logAgentEvent({ event: "agent-result", requestId: parsed.data.requestId, elapsedMs: Date.now() - startedAt, provider: "unavailable", outcome: "unavailable", status: 503 }, log);
+      return responseEnvelope(503, { kind: "unavailable", activity: [] }, parsed.data);
+    }
 
     const outcome = await runAgentTurn(
       {
@@ -155,12 +185,14 @@ export function createChatHandler({ getAccessToken, getModel }: ChatHandlerOptio
       },
       {
         model,
-        changeSchema: missionChangeSchema,
+        changeSchema: modelMissionChangeSchema,
         describeSnapshot: async (snapshot) => describeMission(snapshot),
         previewChange: async (snapshot, change) => previewMissionChange(snapshot, change),
         signal: request.signal,
+        onProgress: (event) => logAgentEvent({ event: "agent-progress", requestId: parsed.data.requestId, elapsedMs: event.elapsedMs, provider: agentProvider(model), stage: event.kind, ...(event.kind === "tool-start" || event.kind === "tool-end" || event.kind === "tool-rejected" ? { tool: event.tool } : {}) }, log),
       },
     );
+    logAgentEvent({ event: "agent-result", requestId: parsed.data.requestId, elapsedMs: Date.now() - startedAt, provider: agentProvider(model), outcome: outcome.kind, ...(outcome.kind === "failed" ? { code: outcome.diagnostic?.code, status: outcome.diagnostic?.status } : {}) }, log);
     return outcomeResponse(outcome, parsed.data);
   };
 }
