@@ -1,12 +1,29 @@
 import { useReducer } from 'react';
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import { MockLanguageModelV3 } from 'ai/test';
 import { afterEach, describe, expect, it } from 'vitest';
+import { runAgentTurn } from '../../src/agent.js';
+import { missionChangeSchema, previewMissionChange } from '../../src/agent-contract.js';
 import { ProposalReview } from '../../web/ProposalReview.js';
 import {
   captureAgentRequest, createEditorSession, editorSessionReducer, prepareAgentRequest,
   type EditorSession,
 } from '../../web/editor-session.js';
 import { makeDraft } from './fixtures.js';
+
+type ModelResponse = Awaited<ReturnType<MockLanguageModelV3['doGenerate']>>;
+const toolCall = (toolName: string, input: unknown, toolCallId: string) => ({
+  type: 'tool-call', toolName, input: JSON.stringify(input), toolCallId,
+} satisfies ModelResponse['content'][number]);
+const modelResponse = (content: ModelResponse['content']): ModelResponse => ({
+  content, warnings: [], finishReason: { unified: 'tool-calls', raw: 'tool-calls' },
+  usage: { inputTokens: { total: 5, noCache: 5, cacheRead: 0, cacheWrite: 0 }, outputTokens: { total: 5, text: 5, reasoning: 0 } },
+});
+function previewId(prompt: unknown) {
+  const id = JSON.stringify(prompt).match(/"previewId":"([^"\\]+)"/)?.[1];
+  if (!id) throw new Error('Expected a valid preview ID in the model prompt');
+  return id;
+}
 
 async function proposalSession(height = 35, faceTarget = false) {
   let session = editorSessionReducer(createEditorSession('mount'), {
@@ -77,6 +94,49 @@ describe('proposal review', () => {
     expect(screen.getByRole('button', { name: 'Apply proposed change' }).hasAttribute('disabled')).toBe(true);
     expect(screen.getByLabelText('Draft height').textContent).toBe('');
     expect(screen.queryByText(/Waypoint positions stay the same/)).toBeNull();
+  });
+
+  it('opens the visual review from a real agent proposal and applies only after confirmation', async () => {
+    let session = editorSessionReducer(createEditorSession('mount'), {
+      type: 'import-route', missionBranchId: 'route', draft: makeDraft({ height: '20' }),
+    });
+    const capture = captureAgentRequest(session, { requestId: 'proposal-1', message: 'Raise this route to 40 meters' });
+    if (capture.kind !== 'ready') throw new Error('Expected a valid route');
+    session = editorSessionReducer(session, { type: 'register-request', capture: capture.capture });
+    const request = await prepareAgentRequest(capture.capture, () => session);
+    if (request === null) throw new Error('Expected a prepared request');
+    session = editorSessionReducer(session, { type: 'begin-request', capture: capture.capture, request });
+
+    const model = new MockLanguageModelV3({ doGenerate: async (options): Promise<ModelResponse> => {
+      if (options.toolChoice?.type === 'required') {
+        return modelResponse([toolCall('propose_change', { previewId: previewId(options.prompt) }, 'proposal')]);
+      }
+      return modelResponse([toolCall('preview_change', { kind: 'set-height', heightAboveTakeoffM: 40 }, 'preview')]);
+    } });
+    const outcome = await runAgentTurn({ message: request.message, snapshot: request.snapshot, binding: request.binding }, {
+      model, changeSchema: missionChangeSchema,
+      describeSnapshot: async () => ({ shotKind: 'route', heightAboveTakeoffM: 20, waypointCount: 2 }),
+      previewChange: async (snapshot, change) => previewMissionChange(snapshot, change),
+    });
+    expect(outcome.kind).toBe('proposed');
+    if (outcome.kind !== 'proposed') throw new Error('Expected a proposal');
+    session = editorSessionReducer(session, { type: 'receive-response', response: {
+      requestId: request.requestId, binding: request.binding,
+      outcome: { kind: 'proposed', change: outcome.change, activity: outcome.activity },
+    } });
+    const { container } = render(<Harness initial={session} />);
+
+    const comparison = within(container).getByRole('table', { name: 'Waypoint height and camera pitch comparison' });
+    const rows = within(comparison).getAllByRole('row');
+    expect(rows).toHaveLength(3);
+    expect(within(rows[1]!).getAllByRole('cell').slice(0, 3).map((cell) => cell.textContent)).toEqual(['01', '20', '40']);
+    expect(within(rows[2]!).getAllByRole('cell').slice(0, 3).map((cell) => cell.textContent)).toEqual(['02', '20', '40']);
+    expect(within(container).getByRole('button', { name: 'Apply proposed change' }).hasAttribute('disabled')).toBe(false);
+    expect(within(container).getByLabelText('Draft height').textContent).toBe('20');
+
+    fireEvent.click(within(container).getByRole('button', { name: 'Apply proposed change' }));
+    expect(within(container).getByLabelText('Draft height').textContent).toBe('40');
+    expect(within(container).queryByRole('heading', { name: 'Review height change' })).toBeNull();
   });
 
   it('applies exactly once through the session reducer and preserves no-op formatting', async () => {

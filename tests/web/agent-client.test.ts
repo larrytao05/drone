@@ -54,7 +54,7 @@ describe('browser agent client', () => {
     expect(await f.client.send(request)).toEqual(reply);
     expect(f.fetch).toHaveBeenNthCalledWith(1, '/api/agent/session', expect.objectContaining({ method: 'POST', credentials: 'same-origin', body: '{"action":"status"}' }));
     expect(f.fetch).toHaveBeenNthCalledWith(2, '/api/agent', expect.objectContaining({ method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json' }, body: JSON.stringify(request) }));
-    expect(f.client.getState().turn).toEqual({ kind: 'completed', response: reply });
+    expect(f.client.getState().turn).toEqual({ kind: 'completed', response: reply, progress: null, elapsedMs: 0 });
     expect(f.client.getState().history).toEqual([{ role: 'user', content: 'Change height' }, { role: 'assistant', content: 'Ready' }]);
     expect(listener).toHaveBeenCalled();
     unsubscribe();
@@ -63,6 +63,57 @@ describe('browser agent client', () => {
     expect(listener).not.toHaveBeenCalled();
     expect(f.client.getState().history).toEqual([]);
     expect(f.client.getState().session.kind).toBe('authenticated');
+  });
+
+  it('shows validated live stages and retains them with the final duration', async () => {
+    const f = fixture(); await f.signIn();
+    const request = f.request();
+    const main = pending<Response>();
+    const progress = { requestId: request.requestId, binding: request.binding, state: 'running', elapsedMs: 900, events: [{ kind: 'model-start', elapsedMs: 50 }] };
+    f.fetch.mockImplementation((url) => url === '/api/agent' ? main.promise : Promise.resolve(json(progress)));
+    const sending = f.client.send(request);
+    await vi.waitFor(() => expect(f.client.getState().turn).toMatchObject({ kind: 'loading', progress }), { timeout: 3_000 });
+    f.advance(1_600);
+    const reply = f.answer(request);
+    main.resolve(json(reply));
+    expect(await sending).toEqual(reply);
+    expect(f.client.getState().turn).toMatchObject({ kind: 'completed', progress, elapsedMs: 1_600 });
+    const polls = f.fetch.mock.calls.filter(([url]) => url === '/api/agent/progress').length;
+    await new Promise((resolve) => setTimeout(resolve, 1_000));
+    expect(f.fetch.mock.calls.filter(([url]) => url === '/api/agent/progress')).toHaveLength(polls);
+  });
+
+  it('ignores delayed progress after cancellation and aborts its separate request', async () => {
+    const f = fixture(); await f.signIn();
+    const request = f.request();
+    const main = pending<Response>();
+    const slowProgress = pending<Response>();
+    f.fetch.mockImplementation((url) => url === '/api/agent' ? main.promise : slowProgress.promise);
+    const sending = f.client.send(request);
+    await vi.waitFor(() => expect(f.fetch.mock.calls.some(([url]) => url === '/api/agent/progress')).toBe(true), { timeout: 3_000 });
+    const progressCall = f.fetch.mock.calls.find(([url]) => url === '/api/agent/progress');
+    f.client.cancel();
+    expect(progressCall?.[1]?.signal?.aborted).toBe(true);
+    slowProgress.resolve(json({ requestId: request.requestId, binding: request.binding, state: 'running', elapsedMs: 900, events: [{ kind: 'model-start', elapsedMs: 50 }] }));
+    main.resolve(json(f.answer(request)));
+    expect(await sending).toBeNull();
+    expect(f.client.getState().turn.kind).toBe('cancelled');
+  });
+
+  it('ignores mismatched progress and keeps polling failures separate from the final result', async () => {
+    const f = fixture(); await f.signIn();
+    const request = f.request();
+    const main = pending<Response>();
+    f.fetch.mockImplementation((url) => url === '/api/agent' ? main.promise : Promise.resolve(json({
+      requestId: request.requestId, binding: { ...request.binding, revision: 999 }, state: 'running', elapsedMs: 100,
+      events: [{ kind: 'model-start', elapsedMs: 10 }],
+    })));
+    const sending = f.client.send(request);
+    await vi.waitFor(() => expect(f.fetch.mock.calls.some(([url]) => url === '/api/agent/progress')).toBe(true), { timeout: 3_000 });
+    await vi.waitFor(() => expect(f.client.getState().turn).toMatchObject({ kind: 'loading', progress: null }));
+    main.resolve(json(f.answer(request)));
+    expect(await sending).toEqual(f.answer(request));
+    expect(f.client.getState().turn).toMatchObject({ kind: 'completed', progress: null });
   });
 
   it('cancels logically before abort and ignores a fetch that completes after cancellation', async () => {
@@ -96,7 +147,7 @@ describe('browser agent client', () => {
     await f.client.send(currentRequest);
     delayed.resolve(json(f.answer(oldRequest, 'Old')));
     await old;
-    expect(f.client.getState().turn).toEqual({ kind: 'completed', response: reply });
+    expect(f.client.getState().turn).toEqual({ kind: 'completed', response: reply, progress: null, elapsedMs: 0 });
     expect(f.client.getState().history.at(-1)?.content).toBe('Current');
   });
 
@@ -228,7 +279,7 @@ describe('browser agent client', () => {
     const response: AgentResponse = { requestId: request.requestId, binding: request.binding, outcome: { kind, activity: [] } };
     f.fetch.mockResolvedValueOnce(json(response, 502));
     expect(await f.client.send(request)).toEqual(response);
-    expect(f.client.getState().turn).toEqual({ kind: 'completed', response });
+    expect(f.client.getState().turn).toEqual({ kind: 'completed', response, progress: null, elapsedMs: 0 });
     expect(await f.client.retry()).toBeNull();
     expect(f.fetch).toHaveBeenCalledTimes(2);
     const newAttempt = f.request();

@@ -6,11 +6,11 @@ import {
   editorHeightChangeSchema, formatAgentRequestId, isCurrentAgentRequestId, missionChangeSchema, previewMissionChange,
 } from "../src/agent-contract.js";
 
-const route: MissionInput = {
+const route = {
   shot: { kind: "route", anchors: [{ latitudeDeg: 40, longitudeDeg: -70 }, { latitudeDeg: 40.001, longitudeDeg: -70.001 }] },
   heightAboveTakeoffM: 20,
   framing: { kind: "fixed", headingDeg: 45, gimbalPitchDeg: -10 },
-};
+} satisfies MissionInput;
 const orbit: MissionInput = {
   shot: { kind: "orbit", centre: { latitudeDeg: 40, longitudeDeg: -70 }, radiusM: 30, startBearingDeg: 0, direction: "clockwise", arc: { kind: "closed" } },
   heightAboveTakeoffM: 20,

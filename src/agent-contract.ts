@@ -88,15 +88,37 @@ const activitySchema = z.strictObject({
 });
 export type AgentActivity = z.infer<typeof activitySchema>;
 
+export const agentFailureSchema = z.strictObject({
+  code: z.enum(["provider-auth", "provider-rate-limit", "provider-unavailable", "model-unavailable", "provider-response", "provider-error", "invalid-tool-call", "tool-execution", "output-limit", "internal-error"]),
+  status: z.number().int().min(400).max(599).optional(),
+});
+export type AgentFailure = z.infer<typeof agentFailureSchema>;
+
+export const agentProgressEventSchema = z.discriminatedUnion("kind", [
+  z.strictObject({ kind: z.enum(["model-start", "model-end"]), elapsedMs: z.number().int().nonnegative() }),
+  z.strictObject({ kind: z.enum(["tool-start", "tool-end", "tool-rejected"]), tool: activitySchema.shape.tool, elapsedMs: z.number().int().nonnegative() }),
+  z.strictObject({ kind: z.literal("terminal"), outcome: z.enum(["answered", "needs-input", "proposed", "failed", "cancelled", "deadline", "budget-exceeded", "unavailable"]), elapsedMs: z.number().int().nonnegative() }),
+]);
+export type AgentProgressEvent = z.infer<typeof agentProgressEventSchema>;
+export const agentProgressRequestSchema = z.strictObject({ requestId: agentRequestIdSchema, binding: agentBindingSchema });
+export const agentProgressResponseSchema = z.strictObject({
+  requestId: agentRequestIdSchema,
+  binding: agentBindingSchema,
+  state: z.enum(["running", "completed"]),
+  elapsedMs: z.number().int().nonnegative(),
+  events: z.array(agentProgressEventSchema).max(16),
+});
+export type AgentProgressResponse = z.infer<typeof agentProgressResponseSchema>;
+
 const outcomeSchema = z.discriminatedUnion("kind", [
   z.strictObject({ kind: z.literal("answered"), text: agentMessageSchema, activity: z.array(activitySchema).max(12) }),
   z.strictObject({ kind: z.literal("needs-input"), question: z.string().trim().min(1).max(1_000), activity: z.array(activitySchema).max(12) }),
   z.strictObject({ kind: z.literal("proposed"), change: missionChangeSchema, activity: z.array(activitySchema).max(12) }),
-  z.strictObject({ kind: z.literal("failed"), activity: z.array(activitySchema).max(12), message: z.string().max(200).optional() }),
+  z.strictObject({ kind: z.literal("failed"), activity: z.array(activitySchema).max(12), message: z.string().max(200).optional(), diagnostic: agentFailureSchema.optional() }),
   z.strictObject({ kind: z.literal("cancelled"), activity: z.array(activitySchema).max(12) }),
   z.strictObject({ kind: z.literal("deadline"), activity: z.array(activitySchema).max(12) }),
   z.strictObject({ kind: z.literal("budget-exceeded"), activity: z.array(activitySchema).max(12) }),
-  z.strictObject({ kind: z.literal("unavailable"), activity: z.array(activitySchema).max(12) }),
+  z.strictObject({ kind: z.literal("unavailable"), activity: z.array(activitySchema).max(12), diagnostic: agentFailureSchema.optional() }),
 ]);
 export const agentResponseSchema = z.strictObject({
   requestId: agentRequestSchema.shape.requestId,

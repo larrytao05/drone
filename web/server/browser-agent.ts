@@ -2,13 +2,13 @@ import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypt
 import { runAgentTurn } from "@drone/mission-planner/agent";
 import {
   AGENT_RETRY_WINDOW_MS, AGENT_SCHEMA_VERSION, PLANNER_VERSION, agentEpochSchema,
-  agentRequestSchema, agentSessionRequestSchema, canonicalAgentRequest,
-  digestMissionInput, isCurrentAgentRequestId, missionChangeSchema, previewMissionChange,
-  type AgentRequest,
+  agentProgressRequestSchema, agentProgressResponseSchema, agentRequestSchema, agentSessionRequestSchema,
+  canonicalAgentRequest, digestMissionInput, isCurrentAgentRequestId,
+  previewMissionChange, sameAgentBinding, type AgentBinding, type AgentProgressEvent, type AgentRequest,
 } from "@drone/mission-planner/agent-contract";
 import type { LanguageModel } from "ai";
-import { json, outcomeResponse, readJsonBody, responseEnvelope } from "./chat-handler.ts";
-import { describeMission } from "./mission-agent.ts";
+import { agentProvider, json, logAgentEvent, outcomeResponse, readJsonBody, responseEnvelope, type AgentLogEvent } from "./chat-handler.ts";
+import { describeMission, modelMissionChangeSchema } from "./mission-agent.ts";
 
 const COOKIE_NAME = "agent_session";
 const SESSION_MS = 8 * 60 * 60 * 1000;
@@ -29,8 +29,9 @@ type Options = Readonly<{
   getModel: () => LanguageModel | undefined;
   now?: () => number;
   epoch?: string;
+  log?: (event: AgentLogEvent) => void;
 }>;
-type RecordEntry = { fingerprint: string; expiresAt: number; completed: boolean; promise: Promise<Response> };
+type RecordEntry = { fingerprint: string; binding: AgentBinding; startedAt: number; durationMs: number; events: AgentProgressEvent[]; expiresAt: number; completed: boolean; promise: Promise<Response> };
 
 function parseConfig(environment: Environment): Config | null {
   const { AGENT_LOGIN_PASSWORD: password, AGENT_SESSION_SECRET: secret, AGENT_ALLOWED_ORIGIN: origin } = environment;
@@ -92,9 +93,10 @@ function parseBodyFailure(kind: "too-large" | "cancelled" | "invalid"): Response
   return json(400, { kind: "invalid-request" });
 }
 
-export function createBrowserAgentHandlers({ getEnvironment, getModel, now = Date.now, epoch = randomBytes(16).toString("hex") }: Options): {
+export function createBrowserAgentHandlers({ getEnvironment, getModel, now = Date.now, epoch = randomBytes(16).toString("hex"), log }: Options): {
   session: (request: Request) => Promise<Response>;
   chat: (request: Request) => Promise<Response>;
+  progress: (request: Request) => Promise<Response>;
 } {
   agentEpochSchema.parse(epoch);
   let currentEpoch = epoch;
@@ -147,18 +149,37 @@ export function createBrowserAgentHandlers({ getEnvironment, getModel, now = Dat
     return response;
   }
 
-  async function run(request: AgentRequest): Promise<Response> {
+  function recordEvent(requestId: string, entry: RecordEntry, provider: AgentLogEvent["provider"], event: AgentProgressEvent): void {
+    entry.events.push(event);
+    if (entry.events.length > 16) entry.events.shift();
+    logAgentEvent({ event: "agent-progress", requestId, elapsedMs: event.elapsedMs, provider, stage: event.kind, ...(event.kind === "tool-start" || event.kind === "tool-end" || event.kind === "tool-rejected" ? { tool: event.tool } : {}) }, log);
+  }
+
+  async function run(request: AgentRequest, entry: RecordEntry): Promise<Response> {
     let model: LanguageModel | undefined;
-    try { model = getModel(); } catch { return responseEnvelope(502, { kind: "failed", activity: [], message: "The model could not complete this request." }, request); }
-    if (!model) return responseEnvelope(503, { kind: "unavailable", activity: [] }, request);
+    try { model = getModel(); } catch {
+      recordEvent(request.requestId, entry, "unavailable", { kind: "terminal", outcome: "failed", elapsedMs: Math.max(0, now() - entry.startedAt) });
+      logAgentEvent({ event: "agent-result", requestId: request.requestId, elapsedMs: Math.max(0, now() - entry.startedAt), provider: "unavailable", outcome: "failed", code: "internal-error", status: 502 }, log);
+      return responseEnvelope(502, { kind: "failed", activity: [], diagnostic: { code: "internal-error" } }, request);
+    }
+    if (!model) {
+      recordEvent(request.requestId, entry, "unavailable", { kind: "terminal", outcome: "unavailable", elapsedMs: Math.max(0, now() - entry.startedAt) });
+      logAgentEvent({ event: "agent-result", requestId: request.requestId, elapsedMs: Math.max(0, now() - entry.startedAt), provider: "unavailable", outcome: "unavailable", status: 503 }, log);
+      return responseEnvelope(503, { kind: "unavailable", activity: [] }, request);
+    }
+    const provider = agentProvider(model);
     try {
       const outcome = await runAgentTurn({ message: request.message, history: request.history, snapshot: request.snapshot, binding: request.binding }, {
-        model, changeSchema: missionChangeSchema, describeSnapshot: async (snapshot) => describeMission(snapshot),
+        model, changeSchema: modelMissionChangeSchema, describeSnapshot: async (snapshot) => describeMission(snapshot),
         previewChange: async (snapshot, change) => previewMissionChange(snapshot, change),
+        onProgress: (event) => recordEvent(request.requestId, entry, provider, event),
       });
+      logAgentEvent({ event: "agent-result", requestId: request.requestId, elapsedMs: Math.max(0, now() - entry.startedAt), provider, outcome: outcome.kind, ...(outcome.kind === "failed" ? { code: outcome.diagnostic?.code, status: outcome.diagnostic?.status } : {}) }, log);
       return outcomeResponse(outcome, request);
     } catch {
-      return responseEnvelope(502, { kind: "failed", activity: [], message: "The model could not complete this request." }, request);
+      recordEvent(request.requestId, entry, provider, { kind: "terminal", outcome: "failed", elapsedMs: Math.max(0, now() - entry.startedAt) });
+      logAgentEvent({ event: "agent-result", requestId: request.requestId, elapsedMs: Math.max(0, now() - entry.startedAt), provider, outcome: "failed", code: "internal-error", status: 502 }, log);
+      return responseEnvelope(502, { kind: "failed", activity: [], diagnostic: { code: "internal-error" } }, request);
     }
   }
 
@@ -192,12 +213,35 @@ export function createBrowserAgentHandlers({ getEnvironment, getModel, now = Dat
     active += 1;
     const entry: RecordEntry = {
       fingerprint, expiresAt: Number(agentRequest.requestId.split(".")[1]) + AGENT_RETRY_WINDOW_MS,
-      completed: false, promise: Promise.resolve().then(() => run(agentRequest)),
+      binding: agentRequest.binding, startedAt: at, durationMs: 0, events: [],
+      completed: false, promise: Promise.resolve().then(() => run(agentRequest, entry)),
     };
     records.set(key, entry);
-    entry.promise = entry.promise.finally(() => { active -= 1; entry.completed = true; });
+    entry.promise = entry.promise.finally(() => { active -= 1; entry.durationMs = Math.max(0, now() - entry.startedAt); entry.completed = true; });
     return (await entry.promise).clone();
   }
 
-  return { session, chat };
+  async function progress(request: Request): Promise<Response> {
+    const config = configuration(request);
+    if (config instanceof Response) return config;
+    const at = now();
+    if (!authenticated(request, config, currentEpoch, at)) return json(401, { kind: "unauthorized" });
+    if (request.method !== "POST") return json(405, { kind: "method-not-allowed" });
+    if (!isJsonPost(request)) return json(415, { kind: "unsupported-media-type" });
+    const body = await readJsonBody(request, 1_024);
+    if (body.kind !== "read") return parseBodyFailure(body.kind);
+    const parsed = agentProgressRequestSchema.safeParse(body.value);
+    if (!parsed.success) return json(400, { kind: "invalid-request" });
+    if (!isCurrentAgentRequestId(parsed.data.requestId, currentEpoch, at)) return json(404, { kind: "not-found" });
+    const entry = records.get(`single-user:${parsed.data.requestId}`);
+    if (!entry || entry.expiresAt <= at) return json(404, { kind: "not-found" });
+    if (!sameAgentBinding(parsed.data.binding, entry.binding)) return json(409, { kind: "invalid-binding" });
+    return json(200, agentProgressResponseSchema.parse({
+      requestId: parsed.data.requestId, binding: entry.binding,
+      state: entry.completed ? "completed" : "running",
+      elapsedMs: entry.completed ? entry.durationMs : Math.max(0, at - entry.startedAt), events: entry.events,
+    }));
+  }
+
+  return { session, chat, progress };
 }

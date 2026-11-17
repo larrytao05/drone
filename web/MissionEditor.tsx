@@ -1,14 +1,15 @@
 'use client';
 
-import { useEffect, useMemo, useReducer, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { analyseDraft } from './mission-input';
 import { isSaved } from './editor';
-import { createEditorSession, editorSessionReducer } from './editor-session';
+import { captureAgentRequest, createEditorSession, editorSessionReducer, prepareAgentRequest } from './editor-session';
+import { createAgentClient } from './agent-client';
 import { decodeBackup, encodeBackup, readLocalDraft, writeLocalDraft } from './draft-storage';
 import { buildMapGeometry } from './map-geometry';
 import type { LocalReadResult } from './draft-storage';
 import type { MissionDraft } from './editor';
-import type { OrdinaryEditorAction } from './editor-session';
+import type { EditorSessionAction, OrdinaryEditorAction } from './editor-session';
 import type { DraftAnalysis } from './mission-input';
 import type { MapGeometry } from './map-geometry';
 import type { MapSourceAction, MapSourceView } from './map-source';
@@ -16,6 +17,8 @@ import { Inspector } from './Inspector';
 import { ReviewDialog } from './ReviewDialog';
 import { RoutePreview } from './RoutePreview';
 import { MissionMap } from './MissionMap';
+import { MissionChat } from './MissionChat';
+import { ProposalReview } from './ProposalReview';
 import styles from './Editor.module.css';
 
 type DraftSlotStatus = LocalReadResult['kind'] | 'checking';
@@ -74,8 +77,30 @@ function saveFailureMessage(error: unknown): string {
 }
 
 export function MissionEditor() {
-  const [session, sessionDispatch] = useReducer(editorSessionReducer, undefined,
-    () => createEditorSession(globalThis.crypto.randomUUID()));
+  const [client] = useState(() => createAgentClient());
+  const [session, setSession] = useState(() => createEditorSession(globalThis.crypto.randomUUID()));
+  const currentSession = useRef(session);
+  const [captureError, setCaptureError] = useState<string | null>(null);
+  const agent = useSyncExternalStore(client.subscribe, client.getState, client.getState);
+  const sessionDispatch = useCallback((action: EditorSessionAction) => {
+    const previous = currentSession.current;
+    const next = editorSessionReducer(previous, action);
+    if (next === previous) return;
+    currentSession.current = next;
+    setSession(next);
+    if (action.type === 'reset-agent') setCaptureError(null);
+    if (previous.missionBranchId !== next.missionBranchId) {
+      setCaptureError(null);
+      const checking = client.getState().session.kind === 'loading' || client.getState().session.kind === 'unknown';
+      client.reset();
+      if (checking) void client.session({ action: 'status' });
+      return;
+    }
+    if (action.type === 'cancel-request'
+      || (next.request.kind === 'idle' && (previous.request.kind === 'hashing' || previous.request.kind === 'awaiting'))) {
+      client.cancel();
+    }
+  }, [client]);
   const state = session.editor;
   const dispatch = (action: OrdinaryEditorAction) => sessionDispatch({ type: 'edit', action });
   const [slotStatus, setSlotStatus] = useState<DraftSlotStatus>('checking');
@@ -84,11 +109,7 @@ export function MissionEditor() {
   const [saveTransaction, setSaveTransaction] = useState<SaveTransaction | null>(null);
   const importInput = useRef<HTMLInputElement>(null);
   const importRequest = useRef(0);
-  const currentRevision = useRef(state.revision);
-  const currentBranchId = useRef(session.missionBranchId);
   const saveInProgress = useRef(false);
-  currentRevision.current = state.revision;
-  currentBranchId.current = session.missionBranchId;
   const analysis = useMemo(() => analyseDraft(state.draft), [state.draft]);
   const geometry = useMemo(() => buildMapGeometry({
     sourcePoints: analysis.sourcePoints,
@@ -110,6 +131,84 @@ export function MissionEditor() {
     setSlotStatus(readBrowserDraft().kind);
   }, []);
 
+  useEffect(() => {
+    let authenticated = client.getState().session.kind === 'authenticated';
+    const unsubscribe = client.subscribe(() => {
+      const nextAuthenticated = client.getState().session.kind === 'authenticated';
+      const expired = authenticated && !nextAuthenticated;
+      authenticated = nextAuthenticated;
+      if (expired) sessionDispatch({ type: 'reset-agent' });
+    });
+    void client.session({ action: 'status' });
+    return () => { unsubscribe(); client.reset(); };
+  }, [client, sessionDispatch]);
+
+  function cancelRequest(requestId: string) {
+    sessionDispatch({ type: 'cancel-request', requestId });
+  }
+
+  function sendMessage(message: string): boolean {
+    const requestId = client.createRequestId();
+    if (requestId === null) return false;
+    const captured = captureAgentRequest(currentSession.current, {
+      requestId, message, history: [...client.getState().history],
+    });
+    if (captured.kind !== 'ready') {
+      client.cancel();
+      setCaptureError(captured.kind === 'invalid-draft'
+        ? 'Complete the route settings and waypoint coordinates before sending.'
+        : 'Enter a shorter message or start a new conversation.');
+      return false;
+    }
+    setCaptureError(null);
+    sessionDispatch({ type: 'register-request', capture: captured.capture });
+    void (async () => {
+      try {
+        const request = await prepareAgentRequest(captured.capture, () => currentSession.current);
+        if (request === null) {
+          const pending = currentSession.current.request;
+          if (pending.kind === 'hashing' && pending.capture.requestId === requestId) {
+            cancelRequest(requestId);
+            setCaptureError('The request is incomplete or too large. Try a shorter message.');
+          }
+          return;
+        }
+        sessionDispatch({ type: 'begin-request', capture: captured.capture, request });
+        const pending = currentSession.current.request;
+        if (pending.kind !== 'awaiting' || pending.capture !== captured.capture) return;
+        const response = await client.send(request);
+        if (response !== null) receiveResponse(response);
+      } catch {
+        const pending = currentSession.current.request;
+        if ((pending.kind !== 'hashing' && pending.kind !== 'awaiting') || pending.capture.requestId !== requestId) return;
+        cancelRequest(requestId);
+        setCaptureError('The route could not be prepared. Try sending again.');
+      }
+    })();
+    return true;
+  }
+
+  function receiveResponse(response: NonNullable<Awaited<ReturnType<typeof client.send>>>) {
+    sessionDispatch({ type: 'receive-response', response });
+    const current = currentSession.current;
+    if (response.outcome.kind === 'proposed' && current.request.kind === 'finished'
+      && current.request.requestId === response.requestId && current.proposal === null) {
+      setCaptureError('The proposed change cannot be applied to this route. Ask for a valid height change.');
+    }
+  }
+
+  async function retryRequest() {
+    const response = await client.retry();
+    if (response !== null) receiveResponse(response);
+  }
+
+  function changeAuthentication(action: Parameters<typeof client.session>[0]) {
+    sessionDispatch({ type: 'reset-agent' });
+    void client.session(action).catch(() => {
+      setCaptureError('Sign-in could not be prepared. Check the password and try again.');
+    });
+  }
+
   function loadDraft() {
     importRequest.current += 1;
     const result = readBrowserDraft();
@@ -125,13 +224,13 @@ export function MissionEditor() {
   async function importBackup(file: File | undefined) {
     if (!file) return;
     const request = ++importRequest.current;
-    const revision = state.revision;
-    const missionBranchId = session.missionBranchId;
+    const revision = currentSession.current.editor.revision;
+    const missionBranchId = currentSession.current.missionBranchId;
     setImportError(null);
     try {
       const text = await file.text();
-      if (request !== importRequest.current || revision !== currentRevision.current
-        || missionBranchId !== currentBranchId.current) return;
+      if (request !== importRequest.current || revision !== currentSession.current.editor.revision
+        || missionBranchId !== currentSession.current.missionBranchId) return;
       const result = decodeBackup(text);
       if (!result.ok) {
         setImportError(`The backup is invalid and was not imported: ${result.issues[0]?.message ?? 'Check the backup file.'}`);
@@ -139,8 +238,8 @@ export function MissionEditor() {
       }
       sessionDispatch({ type: 'import-route', missionBranchId: globalThis.crypto.randomUUID(), draft: result.value });
     } catch {
-      if (request === importRequest.current && revision === currentRevision.current
-        && missionBranchId === currentBranchId.current) {
+      if (request === importRequest.current && revision === currentSession.current.editor.revision
+        && missionBranchId === currentSession.current.missionBranchId) {
         setImportError('The backup file could not be read and was not imported.');
       }
     }
@@ -152,7 +251,7 @@ export function MissionEditor() {
   }
 
   function exportBackup() {
-    const url = URL.createObjectURL(new Blob([encodeBackup(state.draft)], { type: 'application/json' }));
+    const url = URL.createObjectURL(new Blob([encodeBackup(currentSession.current.editor.draft)], { type: 'application/json' }));
     const link = document.createElement('a');
     link.href = url;
     link.download = 'mission-backup.json';
@@ -163,13 +262,16 @@ export function MissionEditor() {
   function openSave() {
     if (saveTransaction !== null) return;
     saveInProgress.current = false;
+    const current = currentSession.current;
+    const analysis = analyseDraft(current.editor.draft);
+    const geometry = buildMapGeometry({ sourcePoints: analysis.sourcePoints, route: analysis.route, takeoff: analysis.takeoff, target: analysis.target });
     setSaveTransaction({
-      draft: state.draft,
-      missionBranchId: session.missionBranchId,
-      revision: state.revision,
+      draft: current.editor.draft,
+      missionBranchId: current.missionBranchId,
+      revision: current.editor.revision,
       analysis,
       geometry,
-      reviewed: state.review.kind === 'reviewed',
+      reviewed: current.editor.review.kind === 'reviewed',
       error: null,
     });
   }
@@ -178,11 +280,14 @@ export function MissionEditor() {
     const transaction = saveTransaction;
     if (transaction === null || saveInProgress.current) return 'keep-open';
 
-    if (transaction.revision !== state.revision || transaction.missionBranchId !== session.missionBranchId) {
+    const current = currentSession.current;
+    if (transaction.revision !== current.editor.revision || transaction.missionBranchId !== current.missionBranchId) {
+      const analysis = analyseDraft(current.editor.draft);
+      const geometry = buildMapGeometry({ sourcePoints: analysis.sourcePoints, route: analysis.route, takeoff: analysis.takeoff, target: analysis.target });
       setSaveTransaction({
-        draft: state.draft,
-        missionBranchId: session.missionBranchId,
-        revision: state.revision,
+        draft: current.editor.draft,
+        missionBranchId: current.missionBranchId,
+        revision: current.editor.revision,
         analysis,
         geometry,
         reviewed: false,
@@ -276,6 +381,22 @@ export function MissionEditor() {
             sourceView={sourceView}
           />
           <RoutePreview analysis={analysis} draft={state.draft} geometry={geometry} />
+          <MissionChat
+            key={session.missionBranchId}
+            analysis={analysis}
+            error={captureError}
+            onCancel={() => {
+              const pending = currentSession.current.request;
+              if (pending.kind === 'hashing' || pending.kind === 'awaiting') cancelRequest(pending.capture.requestId);
+            }}
+            onRetry={() => { void retryRequest(); }}
+            onReset={() => { sessionDispatch({ type: 'reset-agent' }); client.reset(); }}
+            onSend={sendMessage}
+            onSession={changeAuthentication}
+            pending={session.request.kind === 'hashing' || agent.turn.kind === 'loading'}
+            state={agent}
+          />
+          <ProposalReview session={session} dispatch={sessionDispatch} />
         </section>
 
         <Inspector analysis={analysis} dispatch={dispatch} state={state} />

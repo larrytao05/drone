@@ -1,8 +1,9 @@
 import {
   agentRequestSchema, agentResponseSchema, agentSessionRequestSchema, agentSessionResponseSchema,
-  formatAgentRequestId, sameAgentBinding,
-  type AgentRequest, type AgentResponse, type AgentSessionResponse,
+  agentProgressResponseSchema, formatAgentRequestId, sameAgentBinding,
+  type AgentProgressResponse, type AgentRequest, type AgentResponse, type AgentSessionResponse,
 } from '@drone/mission-planner/agent-contract';
+export type { AgentFailure, AgentProgressEvent } from '@drone/mission-planner/agent-contract';
 
 type SessionAction = ReturnType<typeof agentSessionRequestSchema.parse>;
 type Bootstrap = Extract<AgentSessionResponse, { authenticated: true }> & { startedAt: number; receivedAt: number };
@@ -18,9 +19,9 @@ export type AgentClientState = Readonly<{
     | Readonly<{ kind: 'error'; error: AgentClientError }>;
   turn:
     | Readonly<{ kind: 'idle' | 'cancelled' }>
-    | Readonly<{ kind: 'loading'; requestId: string }>
-    | Readonly<{ kind: 'completed'; response: AgentResponse }>
-    | Readonly<{ kind: 'error'; error: AgentClientError; retryAvailable: boolean }>;
+    | Readonly<{ kind: 'loading'; requestId: string; elapsedMs: number; progress: AgentProgressResponse | null }>
+    | Readonly<{ kind: 'completed'; response: AgentResponse; progress: AgentProgressResponse | null; elapsedMs: number }>
+    | Readonly<{ kind: 'error'; error: AgentClientError; retryAvailable: boolean; requestId?: string }>;
   history: ReadonlyArray<Readonly<AgentRequest['history'][number]>>;
 }>;
 type Options = Readonly<{
@@ -71,6 +72,9 @@ export function createAgentClient({ fetch: sendFetch = globalThis.fetch, now = (
   let generation = 0;
   let chatAbort: AbortController | null = null;
   let sessionAbort: AbortController | null = null;
+  let progressAbort: AbortController | null = null;
+  let progressTimer: ReturnType<typeof setTimeout> | null = null;
+  let elapsedTimer: ReturnType<typeof setInterval> | null = null;
   const listeners = new Set<() => void>();
 
   function update(next: AgentClientState): void {
@@ -86,8 +90,56 @@ export function createAgentClient({ fetch: sendFetch = globalThis.fetch, now = (
     const session = sessionAbort;
     chatAbort = null;
     sessionAbort = null;
+    stopProgress();
     chat?.abort();
     session?.abort();
+  }
+
+  function stopProgress(): void {
+    if (progressTimer !== null) clearTimeout(progressTimer);
+    progressTimer = null;
+    if (elapsedTimer !== null) clearInterval(elapsedTimer);
+    elapsedTimer = null;
+    progressAbort?.abort();
+    progressAbort = null;
+  }
+
+  function pollProgress(request: RetryRequest, current: number, chat: AbortController, startedAt: number): void {
+    const poll = async () => {
+      if (current !== generation || chatAbort !== chat || state.turn.kind !== 'loading') return;
+      const controller = new AbortController();
+      progressAbort = controller;
+      try {
+        const response = await sendFetch('/api/agent/progress', {
+          method: 'POST', credentials: 'same-origin', cache: 'no-store',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ requestId: request.requestId, binding: request.binding }), signal: controller.signal,
+        });
+        if (current !== generation || chatAbort !== chat || progressAbort !== controller || state.turn.kind !== 'loading') {
+          void response.body?.cancel().catch(() => {});
+          return;
+        }
+        let progress: AgentProgressResponse | null = null;
+        if (response.ok) {
+          const value = await readJson(response, 4 * 1_024, controller.signal);
+          const parsed = agentProgressResponseSchema.safeParse(value);
+          if (parsed.success && parsed.data.requestId === request.requestId && sameAgentBinding(parsed.data.binding, request.binding)) progress = parsed.data;
+        } else void response.body?.cancel().catch(() => {});
+        if (current === generation && chatAbort === chat && progressAbort === controller && state.turn.kind === 'loading') {
+          update({ ...state, turn: { ...state.turn, elapsedMs: Math.max(0, now() - startedAt), progress: progress ?? state.turn.progress } });
+        }
+      } catch {
+        if (current === generation && chatAbort === chat && progressAbort === controller && state.turn.kind === 'loading') {
+          update({ ...state, turn: { ...state.turn, elapsedMs: Math.max(0, now() - startedAt) } });
+        }
+      } finally {
+        if (progressAbort === controller) {
+          progressAbort = null;
+          if (current === generation && chatAbort === chat && state.turn.kind === 'loading') progressTimer = setTimeout(() => { progressTimer = null; void poll(); }, 900);
+        }
+      }
+    };
+    progressTimer = setTimeout(() => { progressTimer = null; void poll(); }, 750);
   }
 
   function reset(): void {
@@ -144,7 +196,7 @@ export function createAgentClient({ fetch: sendFetch = globalThis.fetch, now = (
 
   function fail(error: AgentClientError, request: RetryRequest | null): null {
     retryRequest = request && now() < request.deadline ? request : null;
-    update({ ...state, turn: { kind: 'error', error, retryAvailable: retryRequest !== null } });
+    update({ ...state, turn: { kind: 'error', error, retryAvailable: retryRequest !== null, ...(request ? { requestId: request.requestId } : {}) } });
     return null;
   }
 
@@ -152,8 +204,17 @@ export function createAgentClient({ fetch: sendFetch = globalThis.fetch, now = (
     const controller = new AbortController();
     chatAbort = controller;
     const current = generation;
+    const startedAt = now();
     retryRequest = null;
-    update({ ...state, turn: { kind: 'loading', requestId: request.requestId }, history });
+    update({ ...state, turn: { kind: 'loading', requestId: request.requestId, elapsedMs: 0, progress: null }, history });
+    if (current === generation && chatAbort === controller) {
+      elapsedTimer = setInterval(() => {
+        if (current === generation && chatAbort === controller && state.turn.kind === 'loading') {
+          update({ ...state, turn: { ...state.turn, elapsedMs: Math.max(0, now() - startedAt) } });
+        }
+      }, 1_000);
+      pollProgress(request, current, controller, startedAt);
+    }
     let error: AgentClientError = { kind: 'network', message: 'The connection was interrupted. Retry can check the same request.' };
     try {
       if (current !== generation || chatAbort !== controller) return null;
@@ -183,7 +244,7 @@ export function createAgentClient({ fetch: sendFetch = globalThis.fetch, now = (
         const outcome = parsed.data.outcome;
         const text = outcome.kind === 'answered' ? outcome.text : outcome.kind === 'needs-input' ? outcome.question : null;
         const history = text ? [...state.history, { role: 'assistant' as const, content: text }].slice(-12) : state.history;
-        update({ ...state, turn: { kind: 'completed', response: parsed.data }, history });
+        update({ ...state, turn: { kind: 'completed', response: parsed.data, progress: state.turn.kind === 'loading' ? state.turn.progress : null, elapsedMs: Math.max(0, now() - startedAt) }, history });
         return current === generation && chatAbort === controller ? parsed.data : null;
       }
       if (!response.ok) {
@@ -195,7 +256,7 @@ export function createAgentClient({ fetch: sendFetch = globalThis.fetch, now = (
       if (current !== generation || chatAbort !== controller) return null;
       return fail(error, request);
     } finally {
-      if (chatAbort === controller) chatAbort = null;
+      if (chatAbort === controller) { stopProgress(); chatAbort = null; }
     }
   }
 
