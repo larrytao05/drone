@@ -74,15 +74,18 @@ function framingSnapshot(framing: Framing): readonly string[] {
   }
 }
 
-function snapshotKey(draft: MissionDraft, review: Review): string {
+export function sourceFingerprint(draft: MissionDraft): string {
   return JSON.stringify([
     draft.name,
     draft.points.map((point) => [point.id, point.coordinate.latitude, point.coordinate.longitude]),
     draft.height,
     framingSnapshot(draft.framing),
     draft.takeoff === null ? null : [draft.takeoff.latitude, draft.takeoff.longitude],
-    review.kind === 'reviewed',
   ]);
+}
+
+function snapshotKey(draft: MissionDraft, review: Review): string {
+  return JSON.stringify([sourceFingerprint(draft), review.kind === 'reviewed']);
 }
 
 export function isSaved(state: EditorState): boolean {

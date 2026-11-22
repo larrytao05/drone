@@ -97,7 +97,12 @@ describe('Shared route settings', () => {
   it('derives target headings and pitches from the real planner', () => {
     const draft = makeDraft({ framing: { kind: 'face-target', coordinate: { latitude: '37.776', longitude: '-122.419' }, height: '10' } });
     const expected = planMission({ shot: { kind: 'route', anchors: draft.points.map((point) => ({ latitudeDeg: Number(point.coordinate.latitude), longitudeDeg: Number(point.coordinate.longitude) })) }, heightAboveTakeoffM: 30, framing: { kind: 'face-target', target: { coordinate: { latitudeDeg: 37.776, longitudeDeg: -122.419 }, heightAboveTakeoffM: 10 } } });
-    expect(analyseDraft(draft).route).toEqual(expected);
+    const route = analyseDraft(draft).route;
+    expect(route.kind).toBe('calculated');
+    if (route.kind !== 'calculated') throw new Error('Expected a calculated route');
+    const { input, ...calculation } = route;
+    expect(planMission(input)).toEqual(calculation);
+    expect(calculation).toEqual(expected);
   });
   it.each(['set-name', 'set-height'] as const)('invalidates review for a changed %s but preserves it for identical text', (type) => {
     const before = makeState();

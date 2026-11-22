@@ -74,25 +74,27 @@ async function expectMarkerInCanvas(
   marker: import('@playwright/test').Locator,
   accessibleName: string,
 ) {
-  const markerBox = await marker.boundingBox();
-  const canvasBox = await mapRegion(page).getByLabel('Map canvas').boundingBox();
-  if (markerBox === null || canvasBox === null) throw new Error(`${accessibleName} and the map canvas must be visible`);
-  expect(markerBox.x).toBeGreaterThanOrEqual(canvasBox.x);
-  expect(markerBox.y).toBeGreaterThanOrEqual(canvasBox.y);
-  expect(markerBox.x + markerBox.width).toBeLessThanOrEqual(canvasBox.x + canvasBox.width);
-  expect(markerBox.y + markerBox.height).toBeLessThanOrEqual(canvasBox.y + canvasBox.height);
-  const hit = await page.evaluate(({ x, y }) => {
-    const element = document.elementFromPoint(x, y);
-    return {
-      name: element?.closest('button')?.getAttribute('aria-label'),
-      target: element?.outerHTML.slice(0, 200),
-      stack: document.elementsFromPoint(x, y).slice(0, 4).map((item) => item.outerHTML.slice(0, 160)),
-    };
-  }, {
-    x: markerBox.x + markerBox.width / 2,
-    y: markerBox.y + markerBox.height / 2,
-  });
-  expect(hit.name, JSON.stringify(hit)).toBe(accessibleName);
+  await expect(async () => {
+    const markerBox = await marker.boundingBox();
+    const canvasBox = await mapRegion(page).getByLabel('Map canvas').boundingBox();
+    if (markerBox === null || canvasBox === null) throw new Error(`${accessibleName} and the map canvas must be visible`);
+    expect(markerBox.x).toBeGreaterThanOrEqual(canvasBox.x);
+    expect(markerBox.y).toBeGreaterThanOrEqual(canvasBox.y);
+    expect(markerBox.x + markerBox.width).toBeLessThanOrEqual(canvasBox.x + canvasBox.width);
+    expect(markerBox.y + markerBox.height).toBeLessThanOrEqual(canvasBox.y + canvasBox.height);
+    const hit = await page.evaluate(({ x, y }) => {
+      const element = document.elementFromPoint(x, y);
+      return {
+        name: element?.closest('button')?.getAttribute('aria-label'),
+        target: element?.outerHTML.slice(0, 200),
+        stack: document.elementsFromPoint(x, y).slice(0, 4).map((item) => item.outerHTML.slice(0, 160)),
+      };
+    }, {
+      x: markerBox.x + markerBox.width / 2,
+      y: markerBox.y + markerBox.height / 2,
+    });
+    expect(hit.name, JSON.stringify(hit)).toBe(accessibleName);
+  }).toPass({ timeout: 5000 });
 }
 
 test('setting takeoff from the map changes only takeoff and invalidates review', async ({ page }) => {
