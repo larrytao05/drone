@@ -1,0 +1,4 @@
+# SIM-1 Software Simulation Prerequisites
+#
+# MAVSDK gRPC Python client (connects to local PX4 SITL/SIH on port 14540)
+mavsdk-grpc>=4.0.0,<5.0.0
