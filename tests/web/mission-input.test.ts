@@ -8,6 +8,7 @@ function expectUncalculated(draft: MissionDraft) {
   const analysis = analyseDraft(draft);
   expect(analysis.route.kind).toBe('not-calculated');
   expect(analysis.route).not.toHaveProperty('waypoints');
+  expect(analysis.route).not.toHaveProperty('input');
   expect(analysis.reviewEligible).toBe(false);
   if (analysis.route.kind !== 'not-calculated') throw new Error('Expected an invalid draft');
   return analysis.route.issues;
@@ -28,6 +29,14 @@ describe('Source to planner adapter', () => {
     const original = structuredClone(draft);
     expect(analyseDraft(draft).route).toEqual({
       kind: 'calculated',
+      input: {
+        shot: { kind: 'route', anchors: [
+          { latitudeDeg: 37.7749, longitudeDeg: -122.4194 },
+          { latitudeDeg: 37.7759, longitudeDeg: -122.4184 },
+        ] },
+        heightAboveTakeoffM: value,
+        framing: { kind: 'fixed', headingDeg: 90, gimbalPitchDeg: -45 },
+      },
       waypoints: [
         { coordinate: { latitudeDeg: 37.7749, longitudeDeg: -122.4194 }, heightAboveTakeoffM: value, headingDeg: 90, gimbalPitchDeg: -45 },
         { coordinate: { latitudeDeg: 37.7759, longitudeDeg: -122.4184 }, heightAboveTakeoffM: value, headingDeg: 90, gimbalPitchDeg: -45 },
@@ -55,6 +64,48 @@ describe('Source to planner adapter', () => {
     expect(analysis.takeoff).toEqual({ latitudeDeg: 37.774, longitudeDeg: -122.42 });
     expect(analysis.route.kind).toBe('not-calculated');
     expect(analysis.reviewEligible).toBe(false);
+  });
+
+  it('exposes the exact planner input and preserves raw source text and point identity/order', () => {
+    const draft = makeDraft({
+      height: '+3e1',
+      points: [
+        { id: secondId, coordinate: { latitude: '+37.7759', longitude: '-122.4184' } },
+        { id: firstId, coordinate: { latitude: '37.7749', longitude: '-122.4194' } },
+      ],
+      framing: { kind: 'fixed', heading: '9e1', pitch: '-4.5e1' },
+    });
+    const original = structuredClone(draft);
+    const analysis = analyseDraft(draft);
+    expect(analysis.route.kind).toBe('calculated');
+    if (analysis.route.kind !== 'calculated') throw new Error('Expected a calculated route');
+    const { input, ...calculation } = analysis.route;
+    expect(input).toEqual({
+      shot: { kind: 'route', anchors: [
+        { latitudeDeg: 37.7759, longitudeDeg: -122.4184 },
+        { latitudeDeg: 37.7749, longitudeDeg: -122.4194 },
+      ] },
+      heightAboveTakeoffM: 30,
+      framing: { kind: 'fixed', headingDeg: 90, gimbalPitchDeg: -45 },
+    });
+    expect(planMission(input)).toEqual(calculation);
+    expect(draft).toEqual(original);
+    expect(analysis.sourcePoints.map(({ id }) => id)).toEqual([secondId, firstId]);
+  });
+
+  it('keeps a valid planner input available when takeoff independently blocks review', () => {
+    const analysis = analyseDraft(makeDraft({ takeoff: null }));
+    expect(analysis.route.kind).toBe('calculated');
+    expect(analysis.reviewEligible).toBe(false);
+    if (analysis.route.kind !== 'calculated') throw new Error('Expected a calculated route');
+    expect(analysis.route.input).toEqual({
+      shot: { kind: 'route', anchors: [
+        { latitudeDeg: 37.7749, longitudeDeg: -122.4194 },
+        { latitudeDeg: 37.7759, longitudeDeg: -122.4184 },
+      ] },
+      heightAboveTakeoffM: 30,
+      framing: { kind: 'fixed', headingDeg: 90, gimbalPitchDeg: -45 },
+    });
   });
 
   it.each([
@@ -90,7 +141,10 @@ describe('Source to planner adapter', () => {
     const draft = makeDraft({ framing: { kind: 'fixed', heading, pitch } });
     const analysis = analyseDraft(draft);
     if (result.kind === 'calculated') {
-      expect(analysis.route).toEqual(result);
+      if (analysis.route.kind !== 'calculated') throw new Error('Expected a calculated route');
+      const { input, ...calculation } = analysis.route;
+      expect(planMission(input)).toEqual(calculation);
+      expect(calculation).toEqual(result);
       expect(analysis.reviewEligible).toBe(true);
     } else {
       const issues = expectUncalculated(draft);
@@ -110,7 +164,10 @@ describe('Source to planner adapter', () => {
     const analysis = analyseDraft(draft);
     expect(analysis.target).toEqual({ latitudeDeg: Number(latitude), longitudeDeg: Number(longitude) });
     if (result.kind === 'calculated') {
-      expect(analysis.route).toEqual(result);
+      if (analysis.route.kind !== 'calculated') throw new Error('Expected a calculated route');
+      const { input, ...calculation } = analysis.route;
+      expect(planMission(input)).toEqual(calculation);
+      expect(calculation).toEqual(result);
       expect(analysis.reviewEligible).toBe(true);
     } else {
       expect(expectUncalculated(draft)).toEqual(result.issues);

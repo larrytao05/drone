@@ -3,20 +3,21 @@
 import type { ComponentProps, Dispatch, KeyboardEvent } from 'react';
 import { DragDropProvider } from '@dnd-kit/react';
 import { isSortable, useSortable } from '@dnd-kit/react/sortable';
-import type { EditorAction, RoutePoint } from './editor';
+import type { RoutePoint } from './editor';
+import type { OrdinaryEditorAction } from './editor-session';
 import styles from './Editor.module.css';
 
 type WaypointListProps = Readonly<{
   points: readonly RoutePoint[];
   selectedPointId: string | null;
-  dispatch: Dispatch<EditorAction>;
+  dispatch: Dispatch<OrdinaryEditorAction>;
 }>;
 
 type WaypointRowProps = Readonly<{
   point: RoutePoint;
   index: number;
   selected: boolean;
-  dispatch: Dispatch<EditorAction>;
+  dispatch: Dispatch<OrdinaryEditorAction>;
 }>;
 
 function WaypointRow({ point, index, selected, dispatch }: WaypointRowProps) {

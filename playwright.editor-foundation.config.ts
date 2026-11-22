@@ -7,6 +7,7 @@ const baseURL = `http://127.0.0.1:${port}`;
 export default defineConfig({
   testDir: './tests/e2e',
   testMatch: [
+    'mission-chat.spec.ts',
     'backup-foundation.spec.ts',
     'backups.spec.ts',
     'save-review.spec.ts',
