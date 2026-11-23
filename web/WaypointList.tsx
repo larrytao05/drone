@@ -11,6 +11,7 @@ type WaypointListProps = Readonly<{
   points: readonly RoutePoint[];
   selectedPointId: string | null;
   dispatch: Dispatch<OrdinaryEditorAction>;
+  disabled?: boolean;
 }>;
 
 type WaypointRowProps = Readonly<{
@@ -18,10 +19,11 @@ type WaypointRowProps = Readonly<{
   index: number;
   selected: boolean;
   dispatch: Dispatch<OrdinaryEditorAction>;
+  disabled?: boolean;
 }>;
 
-function WaypointRow({ point, index, selected, dispatch }: WaypointRowProps) {
-  const { ref, handleRef } = useSortable({ id: point.id, index });
+function WaypointRow({ point, index, selected, dispatch, disabled = false }: WaypointRowProps) {
+  const { ref, handleRef } = useSortable({ id: point.id, index, disabled });
   const ordinal = index + 1;
 
   function selectOnRowEnter(event: KeyboardEvent<HTMLLIElement>) {
@@ -53,7 +55,8 @@ function WaypointRow({ point, index, selected, dispatch }: WaypointRowProps) {
       <button
         aria-label={`Reorder waypoint ${ordinal}`}
         className={styles.waypointReorder}
-        ref={handleRef}
+        disabled={disabled}
+        ref={disabled ? undefined : handleRef}
         type="button"
       >
         <span aria-hidden="true">⠿</span>
@@ -61,6 +64,7 @@ function WaypointRow({ point, index, selected, dispatch }: WaypointRowProps) {
       <button
         aria-label={`Delete waypoint ${ordinal}`}
         className={styles.waypointDelete}
+        disabled={disabled}
         onClick={() => dispatch({ type: 'delete-point', id: point.id })}
         type="button"
       >
@@ -70,9 +74,9 @@ function WaypointRow({ point, index, selected, dispatch }: WaypointRowProps) {
   );
 }
 
-export function WaypointList({ points, selectedPointId, dispatch }: WaypointListProps) {
+export function WaypointList({ points, selectedPointId, dispatch, disabled = false }: WaypointListProps) {
   function finishReorder(event: Parameters<NonNullable<ComponentProps<typeof DragDropProvider>['onDragEnd']>>[0]) {
-    if (event.canceled) return;
+    if (disabled || event.canceled) return;
 
     const { source, target } = event.operation;
     if (!isSortable(source) || !isSortable(target)) return;
@@ -102,6 +106,7 @@ export function WaypointList({ points, selectedPointId, dispatch }: WaypointList
         <ol aria-label="Waypoint order" className={styles.waypointList}>
           {points.map((point, index) => (
             <WaypointRow
+              disabled={disabled}
               dispatch={dispatch}
               index={index}
               key={point.id}

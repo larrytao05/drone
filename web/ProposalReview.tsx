@@ -8,9 +8,10 @@ import styles from './Editor.module.css';
 type ProposalReviewProps = Readonly<{
   session: EditorSession;
   dispatch: Dispatch<EditorSessionAction>;
+  disabled?: boolean;
 }>;
 
-export function ProposalReview({ session, dispatch }: ProposalReviewProps) {
+export function ProposalReview({ session, dispatch, disabled = false }: ProposalReviewProps) {
   const proposal = session.proposal;
   const inspection = inspectProposal(session);
   const current = useMemo(() => analyseDraft(session.editor.draft), [session.editor.draft]);
@@ -73,7 +74,7 @@ export function ProposalReview({ session, dispatch }: ProposalReviewProps) {
       )}
       <div className={styles.proposalActions}>
         <button type="button" className={styles.quietButton} onClick={() => dispatch({ type: 'dismiss-proposal', requestId })}>Dismiss</button>
-        <button type="button" className={styles.secondaryButton} disabled={stale} onClick={() => dispatch({ type: 'apply-proposal', requestId })}>Apply proposed change</button>
+        <button type="button" className={styles.secondaryButton} disabled={stale || disabled} onClick={() => dispatch({ type: 'apply-proposal', requestId })}>Apply proposed change</button>
       </div>
     </section>
   );

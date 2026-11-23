@@ -11,6 +11,7 @@ export type MapSourceView = Readonly<{
   revision: number;
   takeoff: MapGeometry['takeoff'];
   target: MapGeometry['target'];
+  dragDisabled?: boolean;
 }>;
 
 export type MapSourceAction = Extract<EditorAction, {
@@ -139,6 +140,7 @@ export function createMapSource(
       element.setAttribute('aria-label', `Waypoint ${ordinal}`);
       element.setAttribute('aria-pressed', String(point.id === view.selectedPointId));
       element.textContent = String(ordinal).padStart(2, '0');
+      element.style.cursor = view.dragDisabled ? 'pointer' : '';
       if (drag?.id !== point.id) marker.setLngLat(sourceCoordinate(point.coordinate));
     }
   }
@@ -163,6 +165,7 @@ export function createMapSource(
     const point = view.points.find((candidate) => candidate.id === id);
     if (record === undefined || point === undefined) return;
     dispatch({ type: 'select-point', id });
+    if (view.dragDisabled) return;
     drag = {
       id,
       marker: record,
@@ -218,7 +221,7 @@ export function createMapSource(
 
   function handleMapClick(event: Readonly<{ lngLat: Readonly<{ lat: number; lng: number }>; target: EventTarget | null }>) {
     if (isMapMarker(event.target)) return;
-    if (view.tool === 'select') return;
+    if (view.dragDisabled || view.tool === 'select') return;
     const coordinate = normaliseMapCoordinate({
       latitudeDeg: event.lngLat.lat,
       longitudeDeg: event.lngLat.lng,
@@ -240,7 +243,8 @@ export function createMapSource(
     const activeDrag = drag;
     view = nextView;
     if (activeDrag !== null && (activeDrag.revision !== view.revision || activeDrag.tool !== view.tool
-      || !view.sourcePointIds.includes(activeDrag.id))) {
+      || !view.sourcePointIds.includes(activeDrag.id)
+      || view.dragDisabled)) {
       cancelDrag();
     }
     syncMarkers();

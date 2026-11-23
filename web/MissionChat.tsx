@@ -7,6 +7,7 @@ type MissionChatProps = Readonly<{
   analysis: DraftAnalysis;
   state: AgentClientState;
   pending: boolean;
+  composeDisabled?: boolean;
   error: string | null;
   onSend: (message: string) => boolean;
   onCancel: () => void;
@@ -61,7 +62,7 @@ function outcomeMessage(outcome: Extract<AgentClientState['turn'], { kind: 'comp
   }
 }
 
-export function MissionChat({ analysis, state, pending, error, onSend, onCancel, onRetry, onReset, onSession }: MissionChatProps) {
+export function MissionChat({ analysis, state, pending, composeDisabled = false, error, onSend, onCancel, onRetry, onReset, onSession }: MissionChatProps) {
   const [message, setMessage] = useState('');
   const [password, setPassword] = useState('');
   const authenticated = state.session.kind === 'authenticated';
@@ -120,15 +121,15 @@ export function MissionChat({ analysis, state, pending, error, onSend, onCancel,
       </ol>}
       <form className={styles.chatCompose} onSubmit={(event) => {
         event.preventDefault();
-        if (!authenticated || !valid || pending || !message.trim()) return;
+        if (composeDisabled || !authenticated || !valid || pending || !message.trim()) return;
         if (onSend(message)) setMessage('');
       }}>
         <label className={styles.field}>
           <span>Message</span>
-          <textarea aria-describedby="mission-chat-guidance" disabled={!authenticated} maxLength={4000} onChange={(event) => setMessage(event.currentTarget.value)} placeholder="For example, raise this route to 40 metres" rows={3} value={message} />
+          <textarea aria-describedby="mission-chat-guidance" disabled={composeDisabled || !authenticated} maxLength={4000} onChange={(event) => setMessage(event.currentTarget.value)} placeholder="For example, raise this route to 40 metres" rows={3} value={message} />
         </label>
         <p id="mission-chat-guidance" className={styles.previewDescription}>
-          {valid ? analysis.reviewEligible ? 'This route can use the assistant. Proposed changes still need your review.'
+          {composeDisabled ? 'Assistant messages are paused during simulation.' : valid ? analysis.reviewEligible ? 'This route can use the assistant. Proposed changes still need your review.'
             : 'This route can use the assistant. Takeoff is still required before marking it as reviewed.'
             : 'Complete the waypoint coordinates, height and framing settings before sending. Takeoff is optional for chat.'}
         </p>
@@ -148,8 +149,8 @@ export function MissionChat({ analysis, state, pending, error, onSend, onCancel,
         </details>}
         <div className={styles.chatActions}>
           {pending && <button className={styles.quietButton} onClick={onCancel} type="button">Cancel request</button>}
-          {!pending && state.turn.kind === 'error' && state.turn.retryAvailable && <button className={styles.secondaryButton} onClick={onRetry} type="button">Retry same request</button>}
-          <button className={styles.secondaryButton} disabled={!authenticated || !valid || pending || !message.trim()} type="submit">Send</button>
+          {!composeDisabled && !pending && state.turn.kind === 'error' && state.turn.retryAvailable && <button className={styles.secondaryButton} onClick={onRetry} type="button">Retry same request</button>}
+          <button className={styles.secondaryButton} disabled={composeDisabled || !authenticated || !valid || pending || !message.trim()} type="submit">Send</button>
         </div>
       </form>
     </section>

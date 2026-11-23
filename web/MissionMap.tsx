@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
+import type { ReactNode } from 'react';
 import type { StyleSpecification } from 'maplibre-gl';
 import { z } from 'zod';
 import { parseNumericText } from './numeric-input';
@@ -8,6 +9,8 @@ import type { MapSourceAction, MapSourceView } from './map-source';
 import { createMapSource } from './map-source';
 import type { MapGeometry } from './map-geometry';
 import { createMapPreview } from './map-preview';
+import type { MapSimulationView } from './map-simulation';
+import { createMapSimulation } from './map-simulation';
 import styles from './MissionMap.module.css';
 
 type MapStatus = 'loading' | 'ready' | 'unavailable';
@@ -42,20 +45,29 @@ function cameraText(camera: Camera): string {
   return `Center ${camera.latitude.toFixed(4)}, ${camera.longitude.toFixed(4)} · zoom ${camera.zoom.toFixed(1)}`;
 }
 
+export type MapChildrenContext = Readonly<{
+  status: MapStatus;
+}>;
+
 type MissionMapProps = Readonly<{
   geometry: MapGeometry;
   sourceView: MapSourceView;
   onSourceAction: (action: MapSourceAction) => void;
+  simulationView?: MapSimulationView | null;
+  children?: ReactNode | ((context: MapChildrenContext) => ReactNode);
 }>;
 
-export function MissionMap({ geometry, sourceView, onSourceAction }: MissionMapProps) {
+export function MissionMap({ geometry, sourceView, onSourceAction, simulationView, children }: MissionMapProps) {
   const container = useRef<HTMLDivElement>(null);
+  const frameRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<import('maplibre-gl').Map | null>(null);
   const sourceAdapterRef = useRef<ReturnType<typeof createMapSource> | null>(null);
   const previewAdapterRef = useRef<ReturnType<typeof createMapPreview> | null>(null);
+  const simulationAdapterRef = useRef<ReturnType<typeof createMapSimulation> | null>(null);
   const geometryRef = useRef(geometry);
   const sourceViewRef = useRef(sourceView);
   const onSourceActionRef = useRef(onSourceAction);
+  const simulationViewRef = useRef(simulationView);
   const [status, setStatus] = useState<MapStatus>('loading');
   const [localMode, setLocalMode] = useState(false);
   const [moving, setMoving] = useState(false);
@@ -67,6 +79,7 @@ export function MissionMap({ geometry, sourceView, onSourceAction }: MissionMapP
   sourceViewRef.current = sourceView;
   geometryRef.current = geometry;
   onSourceActionRef.current = onSourceAction;
+  simulationViewRef.current = simulationView;
 
   useEffect(() => {
     sourceAdapterRef.current?.sync(sourceView);
@@ -75,6 +88,10 @@ export function MissionMap({ geometry, sourceView, onSourceAction }: MissionMapP
   useEffect(() => {
     previewAdapterRef.current?.sync(geometry);
   }, [geometry]);
+
+  useEffect(() => {
+    simulationAdapterRef.current?.sync(simulationView ?? null);
+  }, [simulationView]);
 
   useEffect(() => {
     let disposed = false;
@@ -91,6 +108,8 @@ export function MissionMap({ geometry, sourceView, onSourceAction }: MissionMapP
       sourceAdapterRef.current = null;
       previewAdapterRef.current?.dispose();
       previewAdapterRef.current = null;
+      simulationAdapterRef.current?.dispose();
+      simulationAdapterRef.current = null;
       if (failedMap !== null) {
         if (mapRef.current === failedMap) mapRef.current = null;
         failedMap.remove();
@@ -179,6 +198,34 @@ export function MissionMap({ geometry, sourceView, onSourceAction }: MissionMapP
             .setLngLat(coordinate)
             .addTo(currentMap),
         }, geometryRef.current);
+        simulationAdapterRef.current = createMapSimulation({
+          createDroneMarker: (element, coordinate) => new Marker({ element, anchor: 'center' })
+            .setLngLat(coordinate)
+            .addTo(currentMap),
+          createBlockedMarker: (element, coordinate) => new Marker({ element, anchor: 'center' })
+            .setLngLat(coordinate)
+            .addTo(currentMap),
+          addBlockedSource: (data) => currentMap.addSource('sim-blocked-segment', { type: 'geojson', data }),
+          setBlockedData: (data) => {
+            const source = currentMap.getSource('sim-blocked-segment');
+            if (source !== undefined && 'setData' in source && typeof source.setData === 'function') {
+              source.setData(data);
+            }
+          },
+          addBlockedLayer: () => currentMap.addLayer({
+            id: 'sim-blocked-line',
+            type: 'line',
+            source: 'sim-blocked-segment',
+            layout: { 'line-cap': 'round', 'line-join': 'round' },
+            paint: { 'line-color': '#ffac74', 'line-width': 4, 'line-dasharray': [2, 2] },
+          }),
+          removeBlockedLayer: () => {
+            if (currentMap.getLayer('sim-blocked-line') !== undefined) currentMap.removeLayer('sim-blocked-line');
+          },
+          removeBlockedSource: () => {
+            if (currentMap.getSource('sim-blocked-segment') !== undefined) currentMap.removeSource('sim-blocked-segment');
+          },
+        }, simulationViewRef.current ?? null);
 
         map.on('error', failMap);
         map.on('webglcontextlost', failMap);
@@ -191,6 +238,7 @@ export function MissionMap({ geometry, sourceView, onSourceAction }: MissionMapP
             return;
           }
           previewAdapterRef.current?.loaded();
+          simulationAdapterRef.current?.loaded();
           setStatus('ready');
           setCamera({
             latitude: map.getCenter().lat,
@@ -245,6 +293,8 @@ export function MissionMap({ geometry, sourceView, onSourceAction }: MissionMapP
       sourceAdapterRef.current = null;
       previewAdapterRef.current?.dispose();
       previewAdapterRef.current = null;
+      simulationAdapterRef.current?.dispose();
+      simulationAdapterRef.current = null;
       if (map !== null) {
         map.remove();
         if (mapRef.current === map) mapRef.current = null;
@@ -278,7 +328,7 @@ export function MissionMap({ geometry, sourceView, onSourceAction }: MissionMapP
       className={styles.mapSurface}
       role="region"
     >
-      <div className={styles.mapFrame}>
+      <div className={styles.mapFrame} ref={frameRef}>
         <div aria-label="Map canvas" className={styles.canvas} ref={container} />
         <div className={styles.mapPanel}>
           <form aria-label="Map locator" className={styles.locator} onSubmit={(event) => {
@@ -301,6 +351,11 @@ export function MissionMap({ geometry, sourceView, onSourceAction }: MissionMapP
             )}
           </form>
         </div>
+        {typeof children === 'function'
+          ? children({
+            status,
+          })
+          : children}
       </div>
       <div className={styles.mapStatusPanel}>
         <div aria-label="Map status" aria-live="polite" aria-busy={status === 'loading' || moving} className={styles.status} role="status">

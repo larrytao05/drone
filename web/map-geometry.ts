@@ -38,7 +38,7 @@ function mapCoordinate(coordinate: Coordinate): Coordinate | null {
   return normaliseMapCoordinate(coordinate);
 }
 
-function crossingBoundary(start: Coordinate, end: Coordinate): Readonly<{
+export function crossingBoundary(start: Coordinate, end: Coordinate): Readonly<{
   start: Coordinate;
   end: Coordinate;
 }> | null {
@@ -69,6 +69,15 @@ function crossingBoundary(start: Coordinate, end: Coordinate): Readonly<{
     };
   }
   return null;
+}
+
+export function splitSegmentAtAntimeridian(start: Coordinate, end: Coordinate): readonly (readonly Coordinate[])[] {
+  const boundary = crossingBoundary(start, end);
+  if (boundary === null) return [[start, end]];
+  return [
+    [start, boundary.start],
+    [boundary.end, end],
+  ];
 }
 
 function routeLines(waypoints: readonly Readonly<{ coordinate: Coordinate }>[]): readonly (readonly Coordinate[])[] {
