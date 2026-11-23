@@ -11,11 +11,13 @@ import type { MapGeometry } from './map-geometry';
 // Types
 // ---------------------------------------------------------------------------
 
-export type SimPhase = 'ready' | 'running' | 'holding' | 'ended';
+export type SimPhase = 'ready' | 'starting' | 'running' | 'holding' | 'ending' | 'ended' | 'failed';
 
 export type SimEvent = Readonly<{
   tick: number;
   label: string;
+  seq?: number;
+  timestamp?: string;
 }>;
 
 export type RouteSummary = Readonly<{
@@ -40,6 +42,25 @@ export type SimulationState = Readonly<{
   tick: number;           // simulated elapsed seconds
   events: readonly SimEvent[];
   advisory: boolean;
+  mode?: 'fixture' | 'live';
+  runId?: string | null;
+  cleanupCompleted?: boolean;
+  ownershipChecking?: boolean;
+  holdRequested?: boolean;
+  holdConfirmed?: boolean;
+  telemetry?: {
+    lat: number;
+    lon: number;
+    altM: number;
+    speedMs: number;
+    northProgressM: number;
+    timestamp: string;
+    sampleAgeMs: number;
+  } | null;
+  error?: {
+    code: string;
+    message: string;
+  } | null;
 }>;
 
 export type SimulationAction =
@@ -56,6 +77,32 @@ export type SimulationAction =
 
 function appendEvent(state: SimulationState, ...labels: string[]): readonly SimEvent[] {
   return [...state.events, ...labels.map((label) => ({ tick: state.tick, label }))];
+}
+
+export function isSimulationEditLocked(state: SimulationState): boolean {
+  if (state.ownershipChecking) {
+    return true;
+  }
+  if (state.phase === 'starting' || state.phase === 'running' || state.phase === 'holding' || state.phase === 'ending') {
+    return true;
+  }
+  if (state.phase === 'failed' || state.phase === 'ended') {
+    return state.cleanupCompleted === false;
+  }
+  return false;
+}
+
+export function simulationBannerText(state: SimulationState): string {
+  if (state.ownershipChecking) {
+    return 'Checking simulation state · Route editing paused.';
+  }
+  if (state.cleanupCompleted === false && (state.phase === 'failed' || state.phase === 'ended')) {
+    return 'Simulation cleanup incomplete · Route editing paused.';
+  }
+  if (state.phase === 'ending') {
+    return 'Simulation ending · Route editing paused.';
+  }
+  return 'Simulation running · Route editing paused.';
 }
 
 export function isActive(state: SimulationState): boolean {
@@ -178,35 +225,67 @@ export function simulationReducer(state: SimulationState, action: SimulationActi
 // ---------------------------------------------------------------------------
 
 export function statusLabel(state: SimulationState): string {
+  if (state.phase === 'ready') return 'Ready to simulate';
+  if (state.phase === 'starting') return 'Starting simulation';
+  if (state.phase === 'ending') return 'Ending simulation';
+  if (state.phase === 'failed') return 'Simulation failed';
+  if (state.phase === 'ended') return 'Simulation ended';
   if (!state.fresh) return 'Telemetry unavailable';
   if (state.phase === 'holding') return 'Holding';
   return 'Running';
 }
 
 export function statusNote(state: SimulationState): string {
+  if (state.phase === 'ready') return 'Ready to simulate.';
+  if (state.phase === 'starting') return 'Initializing simulator and preflight health.';
+  if (state.phase === 'ending') return 'Tearing down simulator resources.';
+  if (state.phase === 'failed') {
+    return state.error?.message ?? 'Simulation encountered a failure.';
+  }
   if (!state.fresh) return 'Resume requires fresh telemetry.';
   if (state.blocked) return 'Segment still blocked.';
-  if (state.phase === 'holding') return 'Segment clear. Waiting for you to resume.';
+  if (state.phase === 'holding') {
+    if (state.holdRequested && !state.holdConfirmed) {
+      return 'Hold requested. Waiting for autopilot telemetry confirmation.';
+    }
+    return 'Segment clear. Waiting for you to resume.';
+  }
   return 'Following the planned route.';
 }
 
 export function speedDisplay(state: SimulationState): string {
   if (!state.fresh) return '—';
+  if (state.telemetry) {
+    return `${state.telemetry.speedMs.toFixed(1)} m/s`;
+  }
   return state.phase === 'holding' ? '0.0 m/s' : '4.0 m/s';
 }
 
 export function altitudeDisplay(state: SimulationState): string {
   if (!state.fresh) return '—';
+  if (state.telemetry) {
+    return `${state.telemetry.altM.toFixed(1)} m`;
+  }
   return state.snapshot ? `${state.snapshot.plannedAltitudeM} m` : '—';
 }
 
-export function telemetryTimeDisplay(tick: number): string {
+export function telemetryTimeDisplay(tick: number, timestamp?: string | null): string {
+  if (timestamp) {
+    try {
+      const date = new Date(timestamp);
+      if (!isNaN(date.getTime())) {
+        return date.toISOString().slice(11, 19);
+      }
+    } catch {
+      // Fallback to tick
+    }
+  }
   return `00:${String(tick).padStart(2, '0')}`;
 }
 
 export function legendText(state: SimulationState, draftWaypointCount: number, blockedLabel?: string): string {
   if (!isActive(state)) return `Planned route · ${draftWaypointCount} waypoints`;
-  if (!state.fresh) return `Last known position · ${telemetryTimeDisplay(state.tick)}`;
+  if (!state.fresh) return `Last known position · ${telemetryTimeDisplay(state.tick, state.telemetry?.timestamp)}`;
   if (state.blocked && blockedLabel) return `Blocked segment · ${blockedLabel}`;
   return 'Simulated drone · Planned route';
 }
@@ -221,4 +300,11 @@ export function canClear(state: SimulationState): boolean {
 
 export function canResume(state: SimulationState): boolean {
   return state.phase === 'holding' && !state.blocked && state.fresh;
+}
+
+export function canEnd(state: SimulationState): boolean {
+  if (state.phase === 'ready') return false;
+  if (state.phase === 'ended' && state.cleanupCompleted !== false) return false;
+  if (state.phase === 'failed' && state.cleanupCompleted === true) return false;
+  return true;
 }

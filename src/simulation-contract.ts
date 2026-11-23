@@ -69,6 +69,22 @@ export const simulationErrorSchema = z.strictObject({
 });
 export type SimulationError = z.infer<typeof simulationErrorSchema>;
 
+export const simulationWaypointInputSchema = z.strictObject({
+  latitudeDeg: z.number().finite().min(-90).max(90),
+  longitudeDeg: z.number().finite().min(-180).max(180),
+  altitudeM: z.number().finite().positive().max(120),
+  speedMs: z.number().finite().positive().optional(),
+});
+export type SimulationWaypointInput = z.infer<typeof simulationWaypointInputSchema>;
+
+export const simulationRouteInputSchema = z.strictObject({
+  name: z.string().optional(),
+  plannedAltitudeM: z.number().finite().positive().max(120),
+  speedMs: z.number().finite().positive().optional(),
+  waypoints: z.array(simulationWaypointInputSchema).min(2),
+});
+export type SimulationRouteInput = z.infer<typeof simulationRouteInputSchema>;
+
 export const simulationStatusSchema = z.strictObject({
   runId: z.string().min(1).nullable(),
   seq: z.number().int().nonnegative(),
@@ -77,6 +93,8 @@ export const simulationStatusSchema = z.strictObject({
   holdRequested: z.boolean(),
   holdConfirmed: z.boolean(),
   fresh: z.boolean(),
+  cleanupCompleted: z.boolean(),
+  route: simulationRouteInputSchema.nullable().optional(),
   telemetry: simulationTelemetrySchema.nullable(),
   events: z.array(simulationEventSchema),
   error: simulationErrorSchema.nullable(),
@@ -85,6 +103,7 @@ export type SimulationStatus = z.infer<typeof simulationStatusSchema>;
 
 export const simulationStartRequestSchema = z.strictObject({
   action: z.literal("start"),
+  route: simulationRouteInputSchema.optional(),
 });
 
 export const simulationStatusRequestSchema = z.strictObject({

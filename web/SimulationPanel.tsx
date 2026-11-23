@@ -9,6 +9,7 @@ import type { Dispatch } from 'react';
 import type { RouteSummary, SimulationAction, SimulationState } from './simulation';
 import {
   altitudeDisplay,
+  canEnd,
   canResume,
   speedDisplay,
   statusLabel,
@@ -22,13 +23,35 @@ type SimulationPanelProps = Readonly<{
   draftSummary: RouteSummary;
   onStart: () => void;
   onSimAction: Dispatch<SimulationAction>;
+  validationError?: string | null | undefined;
+  modeBadge?: string | undefined;
 }>;
 
-export function SimulationPanel({ simulation, draftSummary, onStart, onSimAction }: SimulationPanelProps) {
-  if (simulation.phase === 'ready' || simulation.phase === 'ended') {
+export function SimulationPanel({
+  simulation,
+  draftSummary,
+  onStart,
+  onSimAction,
+  validationError,
+  modeBadge,
+}: SimulationPanelProps) {
+  const isIdleOrCleaned =
+    simulation.phase === 'ready' ||
+    (simulation.phase === 'ended' && simulation.cleanupCompleted !== false) ||
+    (simulation.phase === 'failed' && simulation.cleanupCompleted === true);
+
+  if (isIdleOrCleaned) {
+    const heading =
+      simulation.phase === 'ended'
+        ? 'Simulation ended'
+        : simulation.phase === 'failed'
+        ? 'Simulation failed'
+        : 'Ready to simulate';
+
     return (
       <section className={styles.simPanel} aria-label="Simulation status">
-        <h2>{simulation.phase === 'ended' ? 'Simulation ended' : 'Ready to simulate'}</h2>
+        {modeBadge && <span className={styles.simBadge}>{modeBadge}</span>}
+        <h2>{heading}</h2>
         <div className={styles.simRouteSummary} role="group" aria-label="Route to simulate">
           <p className={styles.simRouteName}>
             <strong>{draftSummary.name || 'Untitled route'}</strong>
@@ -37,6 +60,11 @@ export function SimulationPanel({ simulation, draftSummary, onStart, onSimAction
             {draftSummary.waypointCount} waypoints · {draftSummary.plannedAltitudeM} m planned altitude
           </p>
         </div>
+        {validationError && (
+          <p className={styles.simError} role="alert">
+            {validationError}
+          </p>
+        )}
         <button
           className={styles.simPrimary}
           id="start-simulation"
@@ -45,23 +73,35 @@ export function SimulationPanel({ simulation, draftSummary, onStart, onSimAction
         >
           Start simulation
         </button>
-        {simulation.phase === 'ended' && simulation.events.length > 0 && (
-          <div className={styles.simEvents} role="group" aria-label="Previous run">
-            <h3>Previous run</h3>
-            {simulation.snapshot && <p>{simulation.snapshot.name} · {simulation.snapshot.waypointCount} waypoints · {simulation.snapshot.plannedAltitudeM} m planned altitude</p>}
-            <ol>
-              {simulation.events.map((event, index) => (
-                <li key={index}>{event.label}</li>
-              ))}
-            </ol>
-          </div>
-        )}
+        {(simulation.phase === 'ended' || simulation.phase === 'failed') &&
+          (simulation.events.length > 0 || simulation.error) && (
+            <div className={styles.simEvents} role="group" aria-label="Previous run">
+              <h3>Previous run</h3>
+              {simulation.snapshot && (
+                <p>
+                  {simulation.snapshot.name} · {simulation.snapshot.waypointCount} waypoints ·{' '}
+                  {simulation.snapshot.plannedAltitudeM} m planned altitude
+                </p>
+              )}
+              {simulation.error && (
+                <p className={styles.simError}>
+                  <strong>Error:</strong> {simulation.error.message}
+                </p>
+              )}
+              <ol>
+                {simulation.events.map((event, index) => (
+                  <li key={index}>{event.label}</li>
+                ))}
+              </ol>
+            </div>
+          )}
       </section>
     );
   }
 
   return (
     <section className={styles.simPanel} aria-label="Simulation status">
+      {modeBadge && <span className={styles.simBadge}>{modeBadge}</span>}
       <h2>{statusLabel(simulation)}</h2>
       <p className={styles.simMeta}>{statusNote(simulation)}</p>
 
@@ -71,7 +111,7 @@ export function SimulationPanel({ simulation, draftSummary, onStart, onSimAction
         <dt>Altitude</dt>
         <dd>{altitudeDisplay(simulation)}</dd>
         <dt>Last telemetry</dt>
-        <dd>{telemetryTimeDisplay(simulation.tick)}</dd>
+        <dd>{telemetryTimeDisplay(simulation.tick, simulation.telemetry?.timestamp)}</dd>
       </dl>
 
       <div className={styles.simActions}>
@@ -85,6 +125,7 @@ export function SimulationPanel({ simulation, draftSummary, onStart, onSimAction
         </button>
         <button
           className={styles.secondaryButton}
+          disabled={!canEnd(simulation)}
           onClick={() => onSimAction({ type: 'end' })}
           type="button"
         >
@@ -103,7 +144,8 @@ export function SimulationPanel({ simulation, draftSummary, onStart, onSimAction
 
       {simulation.advisory && (
         <p className={styles.simAdvisory}>
-          <strong>Assistant recommendation</strong><br />
+          <strong>Assistant recommendation</strong>
+          <br />
           Stay in hold until the segment is clear and telemetry is available.
         </p>
       )}

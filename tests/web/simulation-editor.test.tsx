@@ -92,6 +92,12 @@ function startSimulation() {
   fireEvent.click(getStartButton());
 }
 
+async function waitForDiscovery() {
+  await waitFor(() => {
+    expect(screen.getByRole('button', { name: 'Load' }).hasAttribute('disabled')).toBe(false);
+  });
+}
+
 describe('editor view tabs', () => {
   it('shows Edit and Simulation tabs', () => {
     render(<MissionEditor />);
@@ -112,9 +118,10 @@ describe('editor view tabs', () => {
     expect(screen.getByRole('button', { name: 'Edit' }).getAttribute('aria-pressed')).toBe('false');
   });
 
-  it('shows ready state with route info on Simulation tab', () => {
+  it('shows ready state with route info on Simulation tab', async () => {
     seedLocalDraft(makeDraft(), true);
     render(<MissionEditor />);
+    await waitForDiscovery();
     fireEvent.click(screen.getByRole('button', { name: 'Load' }));
     goToSimulation();
     const panel = screen.getByRole('region', { name: 'Simulation inspector' });
@@ -564,6 +571,7 @@ describe('fixture map overlays', () => {
     seedLocalDraft(draft, true);
 
     render(<MissionEditor />);
+    await waitForDiscovery();
     // Load the draft
     fireEvent.click(screen.getByRole('button', { name: 'Load' }));
     startSimulation();
@@ -602,6 +610,7 @@ describe('fixture map overlays', () => {
     seedLocalDraft(draft, true);
 
     render(<MissionEditor />);
+    await waitForDiscovery();
     fireEvent.click(screen.getByRole('button', { name: 'Load' }));
     startSimulation();
 
@@ -624,6 +633,7 @@ describe('fixture map overlays', () => {
     seedLocalDraft(draft, true);
 
     render(<MissionEditor />);
+    await waitForDiscovery();
     fireEvent.click(screen.getByRole('button', { name: 'Load' }));
     const wp1 = await screen.findByRole('button', { name: 'Waypoint 1' });
 
@@ -655,6 +665,7 @@ describe('pass 2 regressions: race conditions and sidebar selection', () => {
     seedLocalDraft(draft, true);
 
     render(<MissionEditor />);
+    await waitForDiscovery();
     fireEvent.click(screen.getByRole('button', { name: 'Load' }));
     await screen.findByRole('button', { name: 'Sign out' });
 
@@ -716,6 +727,7 @@ describe('pass 2 regressions: race conditions and sidebar selection', () => {
     const net = networkAgent();
     seedLocalDraft(makeDraft({ height: '30' }), true);
     render(<MissionEditor />);
+    await waitForDiscovery();
     fireEvent.click(screen.getByRole('button', { name: 'Load' }));
     await screen.findByRole('button', { name: 'Sign out' });
     fireEvent.change(screen.getByRole('textbox', { name: 'Message' }), { target: { value: 'Raise height to 45m' } });
@@ -743,6 +755,7 @@ describe('pass 2 regressions: race conditions and sidebar selection', () => {
     seedLocalDraft(originalDraft, true);
 
     render(<MissionEditor />);
+    await waitForDiscovery();
     fireEvent.click(screen.getByRole('button', { name: 'Load' }));
     expect(screen.getByRole<HTMLInputElement>('textbox', { name: 'Route name' }).value).toBe('Original route');
 
@@ -799,6 +812,7 @@ describe('pass 2 regressions: race conditions and sidebar selection', () => {
     seedLocalDraft(draft, true);
 
     render(<MissionEditor />);
+    await waitForDiscovery();
     fireEvent.click(screen.getByRole('button', { name: 'Load' }));
 
     startSimulation();
@@ -871,11 +885,12 @@ describe('pass 2 regressions: race conditions and sidebar selection', () => {
 });
 
 describe('pass 3 regressions: route snapshot isolation, history retention, and restart', () => {
-  it('retains run events and snapshot after End simulation until next Start', () => {
+  it('retains run events and snapshot after End simulation until next Start', async () => {
     const draft = makeDraft({ name: 'Quarry Survey', height: '35' });
     seedLocalDraft(draft, true);
 
     render(<MissionEditor />);
+    await waitForDiscovery();
     fireEvent.click(screen.getByRole('button', { name: 'Load' }));
     startSimulation();
 
@@ -908,7 +923,7 @@ describe('pass 3 regressions: route snapshot isolation, history retention, and r
     ]);
   });
 
-  it('isolates ended run snapshot and history from draft mutations on Edit tab until next Start', () => {
+  it('isolates ended run snapshot and history from draft mutations on Edit tab until next Start', async () => {
     const draft = makeDraft({ name: 'Original Survey', height: '30', points: [
       ...makeDraft().points,
       { id: '00000000-0000-4000-8000-000000000003', coordinate: { latitude: '37.7769', longitude: '-122.4174' } },
@@ -916,6 +931,7 @@ describe('pass 3 regressions: route snapshot isolation, history retention, and r
     seedLocalDraft(draft, true);
 
     render(<MissionEditor />);
+    await waitForDiscovery();
     fireEvent.click(screen.getByRole('button', { name: 'Load' }));
     startSimulation();
 
@@ -968,6 +984,7 @@ describe('pass 3 regressions: route snapshot isolation, history retention, and r
     seedLocalDraft(draft, true);
 
     render(<MissionEditor />);
+    await waitForDiscovery();
     fireEvent.click(screen.getByRole('button', { name: 'Load' }));
     startSimulation();
 

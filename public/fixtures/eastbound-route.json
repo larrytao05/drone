@@ -1,0 +1,39 @@
+{
+  "version": 1,
+  "draft": {
+    "name": "Eastbound survey route",
+    "points": [
+      {
+        "id": "22222222-3333-4444-8555-666666666661",
+        "coordinate": {
+          "latitude": "47.397743",
+          "longitude": "8.546044"
+        }
+      },
+      {
+        "id": "22222222-3333-4444-8555-666666666662",
+        "coordinate": {
+          "latitude": "47.398043",
+          "longitude": "8.546044"
+        }
+      },
+      {
+        "id": "22222222-3333-4444-8555-666666666663",
+        "coordinate": {
+          "latitude": "47.398043",
+          "longitude": "8.545594"
+        }
+      }
+    ],
+    "height": "10",
+    "framing": {
+      "kind": "fixed",
+      "heading": "90",
+      "pitch": "0"
+    },
+    "takeoff": {
+      "latitude": "47.397743",
+      "longitude": "8.545594"
+    }
+  }
+}

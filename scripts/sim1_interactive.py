@@ -52,6 +52,7 @@ async def run_sim1_interactive(
     route_speed: float = 4.0,
     run_id: Optional[str] = None,
     max_runtime: float = 600.0,
+    custom_waypoints: Optional[List[Dict[str, Any]]] = None,
 ) -> bool:
     """
     Run an interactive SIM-1 session over stdin/stdout JSON-lines.
@@ -95,6 +96,7 @@ async def run_sim1_interactive(
             route_alt=route_alt,
             route_speed=route_speed,
             event_callback=lambda label: emit_interactive("event", {"label": label}),
+            custom_waypoints=custom_waypoints,
         )
 
         emit_interactive("phase", {"phase": "running"})
@@ -104,11 +106,15 @@ async def run_sim1_interactive(
         hold_requested = False
         hold_confirmed = False
         held_north = 0.0
+        held_progress = 0.0
+        held_initial_progress = 0.0
         hold_confirmed_time = 0.0
         clearance_emitted = False
         resumed = False
         resume_commanded = False
+        resume_time = 0.0
         resume_north = 0.0
+        resume_progress = 0.0
         resumed_motion_confirmed = False
         blocked = False
         stopped_since = None
@@ -156,11 +162,13 @@ async def run_sim1_interactive(
                         emit_interactive("error", {"code": "INVALID_REQUEST", "message": "Resume rejected: resume already in flight"})
                     else:
                         resume_commanded = True
+                        resume_time = now
                         emit_interactive("event", {"label": "Explicit resume commanded"})
                         try:
                             await asyncio.wait_for(drone.mission.start_mission(), 5.0)
                             resumed = True
                             resume_north = detector.history[-1]["north_progress_m"] if detector.history else held_north
+                            resume_progress = detector.history[-1]["progress_m"] if detector.history else held_progress
                         except Exception as exc:
                             resume_commanded = False
                             emit_interactive("error", {"code": "SIMULATOR_ERROR", "message": f"Resume command failed: {exc}"})
@@ -181,9 +189,11 @@ async def run_sim1_interactive(
                 lat=pos.latitude_deg,
                 lon=pos.longitude_deg,
                 rel_alt=pos.relative_altitude_m,
-                speed_m_s=vel.north_m_s,
+                speed_m_s=speed_3d,
                 elapsed_s=elapsed,
                 iso_timestamp=iso_now,
+                vel_north_m_s=vel.north_m_s,
+                vel_east_m_s=vel.east_m_s,
             )
 
             emit_interactive("telemetry", {
@@ -194,6 +204,7 @@ async def run_sim1_interactive(
                 "speed_m_s": speed_3d,
                 "north_speed_m_s": vel.north_m_s,
                 "north_progress_m": sample["north_progress_m"],
+                "progress_m": sample["progress_m"],
                 "is_moving": sample["is_moving"],
                 "confirmed": sample["confirmed"],
             })
@@ -204,9 +215,9 @@ async def run_sim1_interactive(
                 emit_interactive("event", {"label": "Route motion confirmed"})
 
             # 2. Blockage injection & Hold request
-            if motion_confirmed and not hold_requested and sample["north_progress_m"] >= 5.0:
+            if motion_confirmed and not hold_requested and sample["progress_m"] >= 5.0:
                 boundary = 20.0
-                if sample["north_progress_m"] >= boundary:
+                if sample["progress_m"] >= boundary:
                     raise MotionTimeoutError("Simulator reached blocked segment before injection.")
                 hold_requested = True
                 blocked = True
@@ -223,17 +234,19 @@ async def run_sim1_interactive(
 
             # 3. Confirming hold
             if hold_requested and not hold_confirmed:
-                if sample["north_progress_m"] >= 20.0:
-                    raise MotionTimeoutError(f"Simulator entered blocked segment at {sample['north_progress_m']:.2f} m.")
+                if sample["progress_m"] >= 20.0:
+                    raise MotionTimeoutError(f"Simulator entered blocked segment at {sample['progress_m']:.2f} m.")
                 if pause_task and pause_task.done():
                     await pause_task
-                    if speed_3d > 0.5:
+                    if speed_3d > 0.5 or sample["leg_speed_m_s"] > 0.25:
                         stopped_since = None
                     elif stopped_since is None:
                         stopped_since = now
                     elif now - stopped_since >= 1.0:
                         hold_confirmed = True
                         held_north = sample["north_progress_m"]
+                        held_progress = sample["progress_m"]
+                        held_initial_progress = sample["progress_m"]
                         hold_confirmed_time = now
                         emit_interactive("hold_confirmed", {"hold_confirmed": True})
                         emit_interactive("phase", {"phase": "holding"})
@@ -251,22 +264,30 @@ async def run_sim1_interactive(
 
             # Check hold integrity (no drift without resume)
             if hold_confirmed and not resumed:
-                if speed_3d > 0.75 or abs(sample["north_progress_m"] - held_north) > 1.0:
+                if sample["progress_m"] >= 20.0:
+                    raise MotionTimeoutError(f"Simulator entered blocked segment at {sample['progress_m']:.2f} m.")
+
+                # Settle into steady-state loiter position as braking flare overshoot levels out
+                if sample["progress_m"] < held_progress:
+                    held_progress = sample["progress_m"]
+                    held_north = sample["north_progress_m"]
+
+                forward_progress_delta = sample["progress_m"] - held_progress
+                backward_drift = held_initial_progress - sample["progress_m"]
+
+                if speed_3d > 0.75 or forward_progress_delta > 1.0:
                     raise MotionTimeoutError(f"Simulator moved after hold without explicit resume (speed {speed_3d:.2f} m/s).")
+                if backward_drift > 2.0:
+                    raise MotionTimeoutError(f"Simulator drifted excessively after hold ({backward_drift:.2f} m backward).")
 
             # 5. Motion after explicit resume
             if resumed and not resumed_motion_confirmed:
-                if sample["north_progress_m"] >= resume_north + 2.0 and vel.north_m_s >= 0.5:
+                if sample["progress_m"] >= resume_progress + 2.0 and sample["leg_speed_m_s"] >= 0.5:
                     resumed_motion_confirmed = True
                     emit_interactive("event", {"label": "Route motion resumed"})
                     emit_interactive("phase", {"phase": "running"})
-
-            # In interactive mode, if scenario finished, wait for operator end or motion timeout
-            if resumed_motion_confirmed:
-                if now - flight_start > motion_timeout:
-                    emit_interactive("event", {"label": "Simulation completed synthetic route flight"})
-                    emit_interactive("phase", {"phase": "ended"})
-                    return True
+                elif resume_time > 0.0 and now - resume_time > motion_timeout:
+                    raise MotionTimeoutError(f"Resumed motion along route could not be confirmed within timeout {motion_timeout}s.")
 
             if not motion_confirmed and elapsed > motion_timeout:
                 raise MotionTimeoutError(f"Motion along route could not be confirmed within timeout {motion_timeout}s.")

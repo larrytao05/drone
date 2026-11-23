@@ -195,6 +195,7 @@ class MotionDetector:
         min_displacement_m: float = 2.0,
         min_speed_m_s: float = 0.5,
         required_samples: int = 3,
+        leg_unit: Tuple[float, float] = (1.0, 0.0),
     ):
         self.home_lat = home_lat
         self.home_lon = home_lon
@@ -202,6 +203,7 @@ class MotionDetector:
         self.min_displacement_m = min_displacement_m
         self.min_speed_m_s = min_speed_m_s
         self.required_samples = required_samples
+        self.unit_north, self.unit_east = leg_unit
 
         self.consecutive_moving_samples = 0
         self.max_speed_observed = 0.0
@@ -217,22 +219,32 @@ class MotionDetector:
         speed_m_s: float,
         elapsed_s: float,
         iso_timestamp: Optional[str] = None,
+        vel_north_m_s: Optional[float] = None,
+        vel_east_m_s: Optional[float] = None,
     ) -> Dict[str, Any]:
         """Record and evaluate a telemetry sample."""
         if iso_timestamp is None:
             iso_timestamp = datetime.datetime.now(datetime.timezone.utc).isoformat()
 
-        north_progress, _, _, _ = calculate_displacement(
+        d_north, d_east, _, _ = calculate_displacement(
             self.home_lat, self.home_lon, self.home_alt,
             lat, lon, rel_alt
         )
 
-        if speed_m_s > self.max_speed_observed:
-            self.max_speed_observed = speed_m_s
-        if north_progress > self.max_displacement_observed:
-            self.max_displacement_observed = north_progress
+        # Horizontal progress along the initial leg direction (ignoring climb and perpendicular drift)
+        progress_m = d_north * self.unit_north + d_east * self.unit_east
 
-        is_moving_sample = (north_progress >= self.min_displacement_m and speed_m_s >= self.min_speed_m_s)
+        if vel_north_m_s is not None and vel_east_m_s is not None:
+            leg_speed_m_s = vel_north_m_s * self.unit_north + vel_east_m_s * self.unit_east
+        else:
+            leg_speed_m_s = speed_m_s
+
+        if leg_speed_m_s > self.max_speed_observed:
+            self.max_speed_observed = leg_speed_m_s
+        if progress_m > self.max_displacement_observed:
+            self.max_displacement_observed = progress_m
+
+        is_moving_sample = (progress_m >= self.min_displacement_m and leg_speed_m_s >= self.min_speed_m_s)
         if is_moving_sample:
             self.consecutive_moving_samples += 1
         else:
@@ -248,7 +260,9 @@ class MotionDetector:
             "lon": lon,
             "alt_m": rel_alt,
             "speed_m_s": speed_m_s,
-            "north_progress_m": north_progress,
+            "leg_speed_m_s": leg_speed_m_s,
+            "progress_m": progress_m,
+            "north_progress_m": d_north,
             "is_moving": is_moving_sample,
             "confirmed": self.is_confirmed,
         }
@@ -343,6 +357,7 @@ async def sim1_startup(
     route_alt: float = 10.0,
     route_speed: float = 4.0,
     event_callback: Optional[Callable[[str], None]] = None,
+    custom_waypoints: Optional[List[Dict[str, Any]]] = None,
 ) -> tuple[Any, Any, list[Any], MotionDetector]:
     """
     Shared preflight & startup sequence for SIM-1:
@@ -416,19 +431,104 @@ async def sim1_startup(
 
         report(f"Starting Origin: Lat={initial_pos.latitude_deg:.6f}, Lon={initial_pos.longitude_deg:.6f}")
 
-        # 4. Generate and upload synthetic route
-        items = generate_synthetic_route(
-            home_lat=initial_pos.latitude_deg,
-            home_lon=initial_pos.longitude_deg,
-            alt_m=route_alt,
-            speed_m_s=route_speed,
-        )
-        plan = MissionPlan(items)
-        try:
-            await asyncio.wait_for(drone.mission.upload_mission(plan), startup_timeout)
-            report(f"Mission plan with {len(items)} synthetic waypoints uploaded")
-        except Exception as exc:
-            raise SimulatorError(f"Failed to upload mission plan: {exc}")
+        # 4. Generate and upload route
+        leg_unit = (1.0, 0.0)
+        if custom_waypoints and len(custom_waypoints) >= 2:
+            first_wp = custom_waypoints[0]
+            first_lat = float(first_wp.get("latitudeDeg") if "latitudeDeg" in first_wp else first_wp.get("latitude_deg", first_wp.get("lat", 0.0)))
+            first_lon = float(first_wp.get("longitudeDeg") if "longitudeDeg" in first_wp else first_wp.get("longitude_deg", first_wp.get("lon", 0.0)))
+
+            d_n, d_e, _, _ = calculate_displacement(
+                initial_pos.latitude_deg, initial_pos.longitude_deg, 0.0,
+                first_lat, first_lon, 0.0,
+            )
+            horiz_dist = math.hypot(d_n, d_e)
+
+            if horiz_dist < 1.0 and len(custom_waypoints) >= 2:
+                second_wp = custom_waypoints[1]
+                second_lat = float(second_wp.get("latitudeDeg") if "latitudeDeg" in second_wp else second_wp.get("latitude_deg", second_wp.get("lat", 0.0)))
+                second_lon = float(second_wp.get("longitudeDeg") if "longitudeDeg" in second_wp else second_wp.get("longitude_deg", second_wp.get("lon", 0.0)))
+                d_n, d_e, _, _ = calculate_displacement(
+                    initial_pos.latitude_deg, initial_pos.longitude_deg, 0.0,
+                    second_lat, second_lon, 0.0,
+                )
+                horiz_dist = math.hypot(d_n, d_e)
+
+            if horiz_dist < 20.0:
+                raise SimulatorError(
+                    f"Initial route leg is too short or degenerate ({horiz_dist:.1f}m < 20.0m). "
+                    "Custom simulation scenarios require an initial leg of at least 20m."
+                )
+
+            leg_unit = (d_n / horiz_dist, d_e / horiz_dist)
+
+            items = []
+            for idx, wp in enumerate(custom_waypoints):
+                lat = float(wp.get("latitudeDeg") if "latitudeDeg" in wp else wp.get("latitude_deg", wp.get("lat", 0.0)))
+                lon = float(wp.get("longitudeDeg") if "longitudeDeg" in wp else wp.get("longitude_deg", wp.get("lon", 0.0)))
+                alt = float(wp.get("altitudeM") if "altitudeM" in wp else wp.get("relative_altitude_m", wp.get("alt_m", route_alt)))
+                spd = float(wp.get("speedMs") if "speedMs" in wp else wp.get("speed_m_s", route_speed))
+
+                if not (-90.0 <= lat <= 90.0 and -180.0 <= lon <= 180.0 and alt > 0):
+                    raise SimulatorError(f"Waypoint {idx + 1} has invalid coordinate or altitude.")
+
+                # Verify distance from local simulator origin is within reasonable local boundary (10km)
+                _, _, _, dist_m = calculate_displacement(
+                    initial_pos.latitude_deg, initial_pos.longitude_deg, initial_pos.relative_altitude_m,
+                    lat, lon, alt
+                )
+                if dist_m > 10000.0:
+                    raise SafetyViolationError(
+                        f"Waypoint {idx + 1} ({lat:.4f}, {lon:.4f}) is {dist_m / 1000.0:.1f} km from simulator origin. "
+                        "Software simulation requires routes within 10 km of the local simulator origin."
+                    )
+
+                if MissionItem is not None:
+                    items.append(
+                        MissionItem(
+                            latitude_deg=lat,
+                            longitude_deg=lon,
+                            relative_altitude_m=alt,
+                            speed_m_s=spd,
+                            is_fly_through=True,
+                            gimbal_pitch_deg=float("nan"),
+                            gimbal_yaw_deg=float("nan"),
+                            camera_action=MissionItem.CameraAction.NONE,
+                            loiter_time_s=float("nan"),
+                            camera_photo_interval_s=float("nan"),
+                            acceptance_radius_m=2.0,
+                            yaw_deg=float("nan"),
+                            camera_photo_distance_m=float("nan"),
+                            vehicle_action=MissionItem.VehicleAction.NONE,
+                        )
+                    )
+                else:
+                    items.append({
+                        "latitude_deg": lat,
+                        "longitude_deg": lon,
+                        "relative_altitude_m": alt,
+                        "speed_m_s": spd,
+                    })
+            plan = MissionPlan(items)
+            try:
+                await asyncio.wait_for(drone.mission.upload_mission(plan), startup_timeout)
+                report(f"Mission plan with {len(items)} custom waypoints uploaded")
+                emit_interactive("route", {"waypoints": custom_waypoints})
+            except Exception as exc:
+                raise SimulatorError(f"Failed to upload mission plan: {exc}")
+        else:
+            items = generate_synthetic_route(
+                home_lat=initial_pos.latitude_deg,
+                home_lon=initial_pos.longitude_deg,
+                alt_m=route_alt,
+                speed_m_s=route_speed,
+            )
+            plan = MissionPlan(items)
+            try:
+                await asyncio.wait_for(drone.mission.upload_mission(plan), startup_timeout)
+                report(f"Mission plan with {len(items)} synthetic waypoints uploaded")
+            except Exception as exc:
+                raise SimulatorError(f"Failed to upload mission plan: {exc}")
 
         # 5. Arm and start mission
         try:
@@ -445,6 +545,7 @@ async def sim1_startup(
             min_displacement_m=2.0,
             min_speed_m_s=0.5,
             required_samples=3,
+            leg_unit=leg_unit,
         )
 
         return drone, initial_pos, items, detector

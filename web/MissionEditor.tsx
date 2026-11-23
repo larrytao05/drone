@@ -7,7 +7,8 @@ import { captureAgentRequest, createEditorSession, editorSessionReducer, prepare
 import { createAgentClient } from './agent-client';
 import { decodeBackup, encodeBackup, readLocalDraft, writeLocalDraft } from './draft-storage';
 import { buildMapGeometry } from './map-geometry';
-import { createSimulationState, isActive, simulationReducer } from './simulation';
+import { isActive, isSimulationEditLocked, simulationBannerText } from './simulation';
+import { createSimulationClient, validateEditorRouteForSimulation } from './simulation-client';
 import type { LocalReadResult } from './draft-storage';
 import type { MissionDraft } from './editor';
 import type { EditorSessionAction, OrdinaryEditorAction } from './editor-session';
@@ -15,7 +16,7 @@ import type { DraftAnalysis } from './mission-input';
 import type { MapGeometry } from './map-geometry';
 import type { MapSourceAction, MapSourceView } from './map-source';
 import type { MapSimulationView } from './map-simulation';
-import type { RouteSnapshot, RouteSummary, SimulationAction, SimulationState } from './simulation';
+import type { RouteSnapshot, RouteSummary, SimulationAction } from './simulation';
 import { Inspector } from './Inspector';
 import { ReviewDialog } from './ReviewDialog';
 import { RoutePreview } from './RoutePreview';
@@ -104,7 +105,7 @@ export function MissionEditor() {
   const [captureError, setCaptureError] = useState<string | null>(null);
   const agent = useSyncExternalStore(client.subscribe, client.getState, client.getState);
   const sessionDispatch = useCallback((action: EditorSessionAction) => {
-    if (isActive(simulationRef.current) && isBlockedDuringSimulation(action)) {
+    if (isSimulationEditLocked(simulationRef.current) && isBlockedDuringSimulation(action)) {
       return;
     }
     const previous = currentSession.current;
@@ -130,26 +131,40 @@ export function MissionEditor() {
 
   // ---- Simulation state ----
   const [tab, setTab] = useState<EditorTab>('edit');
-  const [simulation, setSimulation] = useState<SimulationState>(createSimulationState);
+  const [simClient] = useState(() => createSimulationClient());
+  const simulation = useSyncExternalStore(simClient.subscribe, simClient.getState, simClient.getState);
   const simulationRef = useRef(simulation);
   simulationRef.current = simulation;
+  const [simValidationError, setSimValidationError] = useState<string | null>(null);
 
-  const simActive = isActive(simulation);
+  const simActive = isSimulationEditLocked(simulation);
 
-  const simDispatch = useCallback((action: SimulationAction) => {
-    setSimulation((prev) => {
-      const next = simulationReducer(prev, action);
-      simulationRef.current = next;
-      return next;
-    });
-  }, []);
+  useEffect(() => {
+    void simClient.discover();
+    return () => {
+      simClient.dispose();
+    };
+  }, [simClient]);
+
+  const handleSimAction = useCallback((action: SimulationAction) => {
+    if (simClient.isBridgeAvailable() && simulation.mode === 'live') {
+      if (action.type === 'resume') {
+        void simClient.resume();
+      } else if (action.type === 'end') {
+        void simClient.end();
+      }
+    } else {
+      simClient.dispatchFixture(action);
+    }
+  }, [simClient, simulation.mode]);
 
   // Wire start to capture immutable route snapshot
-  const handleStart = useCallback(() => {
+  const handleStart = useCallback(async () => {
     client.cancel();
     sessionDispatch({ type: 'reset-agent' });
     importRequest.current += 1;
     setSaveTransaction(null);
+    setSimValidationError(null);
 
     const sess = currentSession.current;
     const currentAnalysis = analyseDraft(sess.editor.draft);
@@ -170,12 +185,20 @@ export function MissionEditor() {
       plannedAltitudeM: altitude,
       geometry: currentGeometry,
     };
-    simDispatch({
-      type: 'start',
-      snapshot,
-    });
-    setTab('simulation');
-  }, [client, sessionDispatch, simDispatch]);
+
+    if (simClient.isBridgeAvailable()) {
+      const validation = validateEditorRouteForSimulation(sess.editor.draft, currentAnalysis);
+      if (!validation.ok) {
+        setSimValidationError(validation.error);
+        return;
+      }
+      await simClient.start(snapshot, validation.route);
+      setTab('simulation');
+    } else {
+      simClient.dispatchFixture({ type: 'start', snapshot });
+      setTab('simulation');
+    }
+  }, [client, sessionDispatch, simClient]);
 
   // ---- Existing editor state ----
   const [slotStatus, setSlotStatus] = useState<DraftSlotStatus>('checking');
@@ -246,7 +269,7 @@ export function MissionEditor() {
   }
 
   function sendMessage(message: string): boolean {
-    if (isActive(simulationRef.current)) return false;
+    if (isSimulationEditLocked(simulationRef.current)) return false;
     const requestId = client.createRequestId();
     if (requestId === null) return false;
     const captured = captureAgentRequest(currentSession.current, {
@@ -290,7 +313,7 @@ export function MissionEditor() {
   function receiveResponse(response: NonNullable<Awaited<ReturnType<typeof client.send>>>) {
     sessionDispatch({ type: 'receive-response', response });
     const current = currentSession.current;
-    if (!isActive(simulationRef.current)
+    if (!isSimulationEditLocked(simulationRef.current)
       && response.outcome.kind === 'proposed'
       && current.request.kind === 'finished'
       && current.request.requestId === response.requestId
@@ -312,7 +335,7 @@ export function MissionEditor() {
   }
 
   function loadDraft() {
-    if (isActive(simulationRef.current)) return;
+    if (isSimulationEditLocked(simulationRef.current)) return;
     importRequest.current += 1;
     const result = readBrowserDraft();
     setSlotStatus(result.kind);
@@ -325,7 +348,7 @@ export function MissionEditor() {
   }
 
   async function importBackup(file: File | undefined) {
-    if (!file || isActive(simulationRef.current)) return;
+    if (!file || isSimulationEditLocked(simulationRef.current)) return;
     const request = ++importRequest.current;
     const revision = currentSession.current.editor.revision;
     const missionBranchId = currentSession.current.missionBranchId;
@@ -334,7 +357,7 @@ export function MissionEditor() {
       const text = await file.text();
       if (request !== importRequest.current || revision !== currentSession.current.editor.revision
         || missionBranchId !== currentSession.current.missionBranchId
-        || isActive(simulationRef.current)) return;
+        || isSimulationEditLocked(simulationRef.current)) return;
       const result = decodeBackup(text);
       if (!result.ok) {
         setImportError(`The backup is invalid and was not imported: ${result.issues[0]?.message ?? 'Check the backup file.'}`);
@@ -344,14 +367,14 @@ export function MissionEditor() {
     } catch {
       if (request === importRequest.current && revision === currentSession.current.editor.revision
         && missionBranchId === currentSession.current.missionBranchId
-        && !isActive(simulationRef.current)) {
+        && !isSimulationEditLocked(simulationRef.current)) {
         setImportError('The backup file could not be read and was not imported.');
       }
     }
   }
 
   function startNew() {
-    if (isActive(simulationRef.current)) return;
+    if (isSimulationEditLocked(simulationRef.current)) return;
     importRequest.current += 1;
     sessionDispatch({ type: 'new-route', missionBranchId: globalThis.crypto.randomUUID() });
   }
@@ -366,7 +389,7 @@ export function MissionEditor() {
   }
 
   function openSave() {
-    if (saveTransaction !== null || isActive(simulationRef.current)) return;
+    if (saveTransaction !== null || isSimulationEditLocked(simulationRef.current)) return;
     saveInProgress.current = false;
     const current = currentSession.current;
     const analysis = analyseDraft(current.editor.draft);
@@ -384,7 +407,7 @@ export function MissionEditor() {
 
   function confirmSave(): 'close' | 'keep-open' {
     const transaction = saveTransaction;
-    if (transaction === null || saveInProgress.current || isActive(simulationRef.current)) return 'keep-open';
+    if (transaction === null || saveInProgress.current || isSimulationEditLocked(simulationRef.current)) return 'keep-open';
 
     const current = currentSession.current;
     if (transaction.revision !== current.editor.revision || transaction.missionBranchId !== current.missionBranchId) {
@@ -487,7 +510,7 @@ export function MissionEditor() {
       {/* Banner shown on Edit tab during active simulation */}
       {tab === 'edit' && simActive && (
         <div className={styles.simBanner} role="status">
-          Simulation running · Route editing paused.{' '}
+          {simulationBannerText(simulation)}{' '}
           <button
             className={styles.secondaryButton}
             onClick={() => setTab('simulation')}
@@ -551,7 +574,7 @@ export function MissionEditor() {
           <ProposalReview session={session} dispatch={sessionDispatch} disabled={simActive} />
           {/* Demo controls only visible on Simulation tab while active */}
           {tab === 'simulation' && isActive(simulation) && (
-            <DemoControls simulation={simulation} onSimAction={simDispatch} />
+            <DemoControls simulation={simulation} onSimAction={handleSimAction} />
           )}
         </section>
 
@@ -559,9 +582,11 @@ export function MissionEditor() {
           <aside className={styles.inspector} aria-label="Simulation inspector" role="region">
             <SimulationPanel
               draftSummary={draftSummary}
-              onSimAction={simDispatch}
+              onSimAction={handleSimAction}
               onStart={handleStart}
               simulation={simulation}
+              validationError={simValidationError}
+              modeBadge={simulation.mode === 'live' || simClient.isBridgeAvailable() ? 'Isolated PX4 simulator' : undefined}
             />
           </aside>
         ) : (

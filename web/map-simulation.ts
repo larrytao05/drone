@@ -113,7 +113,7 @@ export function blockedLineData(start: Coordinate, end: Coordinate): LineFeature
   };
 }
 
-function createDroneElement(fresh: boolean, tick: number, coord: Coordinate): HTMLDivElement {
+function createDroneElement(fresh: boolean, tick: number, coord: Coordinate, timestamp?: string | null): HTMLDivElement {
   const el = document.createElement('div');
   if (styles.simDroneMarker) el.classList.add(styles.simDroneMarker);
   if (!fresh && styles.simDroneMarkerStale) el.classList.add(styles.simDroneMarkerStale);
@@ -125,12 +125,12 @@ function createDroneElement(fresh: boolean, tick: number, coord: Coordinate): HT
   if (styles.simDroneDot) dot.className = styles.simDroneDot;
   const label = document.createElement('span');
   if (styles.simDroneLabel) label.className = styles.simDroneLabel;
-  label.textContent = fresh ? 'Simulated drone' : `Last known position (${telemetryTimeDisplay(tick)})`;
+  label.textContent = fresh ? 'Simulated drone' : `Last known position (${telemetryTimeDisplay(tick, timestamp)})`;
   el.append(dot, label);
   return el;
 }
 
-function updateDroneElement(el: HTMLDivElement, fresh: boolean, tick: number, coord: Coordinate) {
+function updateDroneElement(el: HTMLDivElement, fresh: boolean, tick: number, coord: Coordinate, timestamp?: string | null) {
   if (styles.simDroneMarkerStale) {
     el.classList.toggle(styles.simDroneMarkerStale, !fresh);
   }
@@ -140,7 +140,7 @@ function updateDroneElement(el: HTMLDivElement, fresh: boolean, tick: number, co
   const labelSelector = styles.simDroneLabel ? `.${styles.simDroneLabel}` : 'span:last-child';
   const label = el.querySelector<HTMLSpanElement>(labelSelector);
   if (label !== null) {
-    label.textContent = fresh ? 'Simulated drone' : `Last known position (${telemetryTimeDisplay(tick)})`;
+    label.textContent = fresh ? 'Simulated drone' : `Last known position (${telemetryTimeDisplay(tick, timestamp)})`;
   }
 }
 
@@ -165,6 +165,7 @@ export function createMapSimulation(resources: SimulationResources, initialView:
   let blockedLayerAdded = false;
   let lastReportedCoordinate: Coordinate | null = null;
   let lastReportedTick = 0;
+  let lastReportedTimestamp: string | null = null;
 
   function apply() {
     if (!loaded || disposed) return;
@@ -188,6 +189,7 @@ export function createMapSimulation(resources: SimulationResources, initialView:
         blockedSourceAdded = false;
       }
       lastReportedCoordinate = null;
+      lastReportedTimestamp = null;
       return;
     }
 
@@ -196,20 +198,41 @@ export function createMapSimulation(resources: SimulationResources, initialView:
 
     // Telemetry & Drone position
     let currentCoord: Coordinate;
-    if (sim.fresh) {
-      currentCoord = interpolateRouteCoordinate(routeCoords, sim.progress);
-      lastReportedCoordinate = currentCoord;
-      lastReportedTick = sim.tick;
+    const hasLiveTelemetry = sim.telemetry !== undefined && sim.telemetry !== null;
+
+    if (hasLiveTelemetry) {
+      if (sim.fresh) {
+        currentCoord = {
+          latitudeDeg: sim.telemetry!.lat,
+          longitudeDeg: sim.telemetry!.lon,
+        };
+        lastReportedCoordinate = currentCoord;
+        lastReportedTick = sim.tick;
+        lastReportedTimestamp = sim.telemetry!.timestamp;
+      } else {
+        currentCoord = lastReportedCoordinate ?? {
+          latitudeDeg: sim.telemetry!.lat,
+          longitudeDeg: sim.telemetry!.lon,
+        };
+      }
     } else {
-      currentCoord = lastReportedCoordinate ?? interpolateRouteCoordinate(routeCoords, sim.progress);
+      if (sim.fresh) {
+        currentCoord = interpolateRouteCoordinate(routeCoords, sim.progress);
+        lastReportedCoordinate = currentCoord;
+        lastReportedTick = sim.tick;
+        lastReportedTimestamp = null;
+      } else {
+        currentCoord = lastReportedCoordinate ?? interpolateRouteCoordinate(routeCoords, sim.progress);
+      }
     }
     const displayTick = sim.fresh ? sim.tick : lastReportedTick;
+    const displayTimestamp = sim.fresh ? (sim.telemetry?.timestamp ?? null) : lastReportedTimestamp;
 
     if (droneMarker === null) {
-      droneElement = createDroneElement(sim.fresh, displayTick, currentCoord);
+      droneElement = createDroneElement(sim.fresh, displayTick, currentCoord, displayTimestamp);
       droneMarker = resources.createDroneMarker(droneElement, [currentCoord.longitudeDeg, currentCoord.latitudeDeg]);
     } else if (droneElement !== null) {
-      updateDroneElement(droneElement, sim.fresh, displayTick, currentCoord);
+      updateDroneElement(droneElement, sim.fresh, displayTick, currentCoord, displayTimestamp);
       droneMarker.setLngLat([currentCoord.longitudeDeg, currentCoord.latitudeDeg]);
     }
 

@@ -25,6 +25,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import datetime
+import json
 import math
 import os
 import re
@@ -333,6 +334,8 @@ def run_isolated_docker(args: Any) -> int:
                 cmd.extend(["--run-id", args.run_id])
             if getattr(args, "max_runtime", None):
                 cmd.extend(["--max-runtime", str(args.max_runtime)])
+            if getattr(args, "route_json", None):
+                cmd.extend(["--route-json", args.route_json])
             proc = subprocess.Popen(cmd, stdin=sys.stdin, stdout=sys.stdout, stderr=sys.stderr)
             status = proc.wait()
         else:
@@ -426,6 +429,11 @@ def parse_args(args: Optional[List[str]] = None) -> argparse.Namespace:
         default=None,
         help="Optional run identifier for tracking in interactive mode.",
     )
+    parser.add_argument(
+        "--route-json",
+        default=None,
+        help="Optional JSON string of route waypoints to execute.",
+    )
     parsed = parser.parse_args(args)
     for name in ("startup_timeout", "motion_timeout", "max_runtime", "alt", "speed"):
         value = getattr(parsed, name)
@@ -456,6 +464,13 @@ def main() -> int:
         if args.docker:
             return run_isolated_docker(args)
         if args.interactive:
+            custom_waypoints = None
+            if args.route_json:
+                try:
+                    custom_waypoints = json.loads(args.route_json)
+                except Exception as exc:
+                    return handle_error("INVALID_REQUEST", f"Failed to parse --route-json: {exc}", 1)
+
             success = asyncio.run(
                 run_sim1_interactive(
                     address=args.address,
@@ -465,6 +480,7 @@ def main() -> int:
                     route_speed=args.speed,
                     run_id=args.run_id,
                     max_runtime=args.max_runtime,
+                    custom_waypoints=custom_waypoints,
                 )
             )
             return 0 if success else 1

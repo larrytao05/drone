@@ -15,6 +15,10 @@ type DemoControlsProps = Readonly<{
 }>;
 
 export function DemoControls({ simulation, onSimAction }: DemoControlsProps) {
+  if (simulation.mode === 'live') {
+    return null;
+  }
+
   return (
     <section className={styles.demoControls} aria-label="Demo controls">
       <p className={styles.demoHeading}>
