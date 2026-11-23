@@ -1,5 +1,5 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
-import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import type { Dispatch } from 'react';
 import { Inspector } from '../../web/Inspector.js';
 import { MissionEditor } from '../../web/MissionEditor.js';
@@ -7,9 +7,11 @@ import { analyseDraft } from '../../web/mission-input.js';
 import { createEditorState, type EditorAction, type EditorState, type MissionDraft } from '../../web/editor.js';
 import { makeDraft } from './fixtures.js';
 import { encodeBackup, readLocalDraft, writeLocalDraft } from '../../web/draft-storage.js';
+import { createdMaps, deferMapLoad, resetMaplibreDouble } from './maplibre-double.js';
 
 afterEach(() => {
   cleanup();
+  resetMaplibreDouble();
   vi.restoreAllMocks();
   window.localStorage.clear();
 });
@@ -525,5 +527,101 @@ describe('editor shell actions', () => {
     await act(async () => { finishImport(encodeBackup(makeDraft({ name: 'Imported after selection' }))); });
 
     expect(screen.getByRole<HTMLInputElement>('textbox', { name: 'Route name' }).value).toBe('Imported after selection');
+  });
+});
+
+describe('route import map centering', () => {
+  beforeEach(() => {
+    resetMaplibreDouble();
+    vi.stubGlobal('fetch', vi.fn<typeof globalThis.fetch>(async (input) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : (input as { url: string }).url;
+      if (url.includes('/api/map-config')) {
+        return new Response(JSON.stringify({ kind: 'local' }), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      return new Response(JSON.stringify({ ok: false }), { status: 404, headers: { 'content-type': 'application/json' } });
+    }));
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('centers on the first valid waypoint when the initial waypoint is invalid', async () => {
+    render(<MissionEditor />);
+    await screen.findByText('Map ready');
+    const [map] = createdMaps();
+
+    const imported = makeDraft({
+      name: 'Mixed waypoints',
+      points: [
+        { id: '11111111-1111-4111-8111-111111111111', coordinate: { latitude: '', longitude: '' } },
+        { id: '22222222-2222-4222-8222-222222222222', coordinate: { latitude: '48.8566', longitude: '2.3522' } },
+      ],
+    });
+
+    fireEvent.change(screen.getByLabelText('Import backup'), {
+      target: { files: [fileWithText('mixed.json', encodeBackup(imported))] },
+    });
+
+    await screen.findByDisplayValue('Mixed waypoints');
+    expect(map?.getCenter()).toEqual({ lat: 48.8566, lng: 2.3522 });
+    expect(map?.getZoom()).toBe(15);
+  });
+
+  it('centers camera once on import and allows normal subsequent navigation without re-centering', async () => {
+    render(<MissionEditor />);
+    await screen.findByText('Map ready');
+    const [map] = createdMaps();
+
+    const imported = makeDraft({
+      name: 'Import once',
+      points: [{ id: '11111111-1111-4111-8111-111111111111', coordinate: { latitude: '51.5074', longitude: '-0.1278' } }],
+    });
+    fireEvent.change(screen.getByLabelText('Import backup'), {
+      target: { files: [fileWithText('import.json', encodeBackup(imported))] },
+    });
+    await screen.findByDisplayValue('Import once');
+    expect(map?.getCenter()).toEqual({ lat: 51.5074, lng: -0.1278 });
+
+    // Subsequent navigation via locator
+    const latitudeInput = screen.getByRole<HTMLInputElement>('textbox', { name: 'Locator latitude' });
+    const longitudeInput = screen.getByRole<HTMLInputElement>('textbox', { name: 'Locator longitude' });
+    fireEvent.change(latitudeInput, { target: { value: '35.6762' } });
+    fireEvent.change(longitudeInput, { target: { value: '139.6503' } });
+    fireEvent.submit(screen.getByRole('form', { name: 'Map locator' }));
+    expect(map?.getCenter()).toEqual({ lat: 35.6762, lng: 139.6503 });
+
+    // Editing route name or other source does not re-center camera to imported waypoint
+    fireEvent.change(screen.getByRole<HTMLInputElement>('textbox', { name: 'Route name' }), { target: { value: 'Renamed route' } });
+    expect(map?.getCenter()).toEqual({ lat: 35.6762, lng: 139.6503 });
+  });
+
+  it.each(['new route', 'empty import'])('discards queued camera focus before map load after %s', async (replacement) => {
+    deferMapLoad();
+    render(<MissionEditor />);
+    const input = screen.getByLabelText('Import backup');
+    const draft = makeDraft({
+      name: 'Queued route',
+      points: [{ id: '11111111-1111-4111-8111-111111111111', coordinate: { latitude: '51.5074', longitude: '-0.1278' } }],
+    });
+    await waitFor(() => expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Import backup' }).disabled).toBe(false));
+    fireEvent.change(input, { target: { files: [fileWithText('queued.json', encodeBackup(draft))] } });
+    await screen.findByDisplayValue(draft.name);
+
+    if (replacement === 'new route') {
+      fireEvent.click(screen.getByRole('button', { name: 'New' }));
+      expect(screen.queryByDisplayValue(draft.name)).toBeNull();
+    } else {
+      const empty = makeDraft({ name: 'Empty route', points: [] });
+      fireEvent.change(input, { target: { files: [fileWithText('empty.json', encodeBackup(empty))] } });
+      await screen.findByDisplayValue(empty.name);
+    }
+
+    await waitFor(() => expect(createdMaps()).toHaveLength(1));
+    const [map] = createdMaps();
+    const originalCenter = map?.getCenter();
+    act(() => map?.emit('load'));
+    await screen.findByText('Map ready');
+    expect(map?.getCenter()).toEqual(originalCenter);
   });
 });

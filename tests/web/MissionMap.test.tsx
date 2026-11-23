@@ -279,4 +279,82 @@ describe('local MapLibre foundation', () => {
     unmount();
     await waitFor(() => expect(createdMaps()).toHaveLength(0));
   });
+
+  it('centers the map camera on cameraFocus without changing zoom', async () => {
+    const { rerender } = render(<MissionMap geometry={emptyGeometry} sourceView={emptyPointView} onSourceAction={vi.fn()} />);
+    await screen.findByText('Map ready');
+    const [map] = createdMaps();
+    expect(map?.getCenter()).toEqual({ lat: 37.7749, lng: -122.4194 });
+    if (!map) throw new Error('Expected a loaded map');
+    map.zoom = 18;
+    const easeTo = vi.spyOn(map, 'easeTo');
+
+    rerender(
+      <MissionMap
+        cameraFocus={{ latitudeDeg: 51.5074, longitudeDeg: -0.1278 }}
+        geometry={emptyGeometry}
+        onSourceAction={vi.fn()}
+        sourceView={emptyPointView}
+      />,
+    );
+
+    expect(map?.getCenter()).toEqual({ lat: 51.5074, lng: -0.1278 });
+    expect(easeTo).toHaveBeenCalledExactlyOnceWith({ center: [-0.1278, 51.5074], duration: 350 });
+    expect(map.getZoom()).toBe(18);
+    expect(screen.getByRole('status', { name: 'Map status' }).textContent).toContain('Center 51.5074, -0.1278 · zoom 18.0');
+  });
+
+  it('handles map initialization ordering when cameraFocus is supplied before style load', async () => {
+    deferMapLoad();
+    render(
+      <MissionMap
+        cameraFocus={{ latitudeDeg: 40.7128, longitudeDeg: -74.0060 }}
+        geometry={emptyGeometry}
+        onSourceAction={vi.fn()}
+        sourceView={emptyPointView}
+      />,
+    );
+    await waitFor(() => expect(createdMaps()).toHaveLength(1));
+    const [map] = createdMaps();
+    expect(screen.getByRole('status', { name: 'Map status' }).textContent).toContain('Loading map');
+
+    act(() => map?.emit('load'));
+
+    expect(map?.getCenter()).toEqual({ lat: 40.7128, lng: -74.0060 });
+    expect(map?.getZoom()).toBe(15);
+    expect(screen.getByRole('status', { name: 'Map status' }).textContent).toContain('Center 40.7128, -74.0060 · zoom 15.0');
+  });
+
+  it('centers again on repeated cameraFocus requests with identical or new coordinates', async () => {
+    const { rerender } = render(<MissionMap geometry={emptyGeometry} sourceView={emptyPointView} onSourceAction={vi.fn()} />);
+    await screen.findByText('Map ready');
+    const [map] = createdMaps();
+
+    rerender(
+      <MissionMap
+        cameraFocus={{ latitudeDeg: 51.5074, longitudeDeg: -0.1278 }}
+        geometry={emptyGeometry}
+        onSourceAction={vi.fn()}
+        sourceView={emptyPointView}
+      />,
+    );
+    expect(map?.getCenter()).toEqual({ lat: 51.5074, lng: -0.1278 });
+
+    const latitudeInput = screen.getByRole<HTMLInputElement>('textbox', { name: 'Locator latitude' });
+    const longitudeInput = screen.getByRole<HTMLInputElement>('textbox', { name: 'Locator longitude' });
+    fireEvent.change(latitudeInput, { target: { value: '35.6762' } });
+    fireEvent.change(longitudeInput, { target: { value: '139.6503' } });
+    fireEvent.submit(screen.getByRole('form', { name: 'Map locator' }));
+    expect(map?.getCenter()).toEqual({ lat: 35.6762, lng: 139.6503 });
+
+    rerender(
+      <MissionMap
+        cameraFocus={{ latitudeDeg: 51.5074, longitudeDeg: -0.1278 }}
+        geometry={emptyGeometry}
+        onSourceAction={vi.fn()}
+        sourceView={emptyPointView}
+      />,
+    );
+    expect(map?.getCenter()).toEqual({ lat: 51.5074, lng: -0.1278 });
+  });
 });
