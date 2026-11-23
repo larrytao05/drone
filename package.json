@@ -25,6 +25,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "npm run build && vitest run",
     "test:web": "vitest run --config vitest.web.config.ts",
+    "test:sim": "python3 -u scripts/sim1_run_route.py --docker --scenario full --address udpin://127.0.0.1:14540 --startup-timeout 45 --motion-timeout 35",
     "test:e2e": "playwright test",
     "test:e2e:foundation": "playwright test --config playwright.foundation.config.ts",
     "test:e2e:persistence": "playwright test --config playwright.editor-foundation.config.ts --grep 'saves an eligible review|failed local write|review dialog contains|review dialog remains usable|delayed import|cancel and Escape|does not autoload|inaccessible storage read|corrupt saved slot|failed import keeps|exports actual versioned|imports a valid complete|imported source text|deleting the selected row|deleting an unselected row'",
