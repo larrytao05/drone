@@ -7,18 +7,24 @@ import { captureAgentRequest, createEditorSession, editorSessionReducer, prepare
 import { createAgentClient } from './agent-client';
 import { decodeBackup, encodeBackup, readLocalDraft, writeLocalDraft } from './draft-storage';
 import { buildMapGeometry } from './map-geometry';
+import { createSimulationState, isActive, simulationReducer } from './simulation';
 import type { LocalReadResult } from './draft-storage';
 import type { MissionDraft } from './editor';
 import type { EditorSessionAction, OrdinaryEditorAction } from './editor-session';
 import type { DraftAnalysis } from './mission-input';
 import type { MapGeometry } from './map-geometry';
 import type { MapSourceAction, MapSourceView } from './map-source';
+import type { MapSimulationView } from './map-simulation';
+import type { RouteSnapshot, RouteSummary, SimulationAction, SimulationState } from './simulation';
 import { Inspector } from './Inspector';
 import { ReviewDialog } from './ReviewDialog';
 import { RoutePreview } from './RoutePreview';
 import { MissionMap } from './MissionMap';
 import { MissionChat } from './MissionChat';
 import { ProposalReview } from './ProposalReview';
+import { SimulationPanel } from './SimulationPanel';
+import { SimulationOverlay } from './SimulationOverlay';
+import { DemoControls } from './DemoControls';
 import styles from './Editor.module.css';
 
 type DraftSlotStatus = LocalReadResult['kind'] | 'checking';
@@ -31,6 +37,8 @@ type SaveTransaction = Readonly<{
   reviewed: boolean;
   error: string | null;
 }>;
+
+export type EditorTab = 'edit' | 'simulation';
 
 const tools = [
   { value: 'select', label: 'Select' },
@@ -76,6 +84,19 @@ function saveFailureMessage(error: unknown): string {
     : 'Local storage is unavailable.';
 }
 
+function isBlockedDuringSimulation(action: EditorSessionAction): boolean {
+  if (action.type === 'edit') {
+    return action.action.type !== 'select-point';
+  }
+  return action.type === 'new-route'
+    || action.type === 'import-route'
+    || action.type === 'load-route'
+    || action.type === 'apply-proposal'
+    || action.type === 'register-request'
+    || action.type === 'begin-request'
+    || action.type === 'receive-response';
+}
+
 export function MissionEditor() {
   const [client] = useState(() => createAgentClient());
   const [session, setSession] = useState(() => createEditorSession(globalThis.crypto.randomUUID()));
@@ -83,6 +104,9 @@ export function MissionEditor() {
   const [captureError, setCaptureError] = useState<string | null>(null);
   const agent = useSyncExternalStore(client.subscribe, client.getState, client.getState);
   const sessionDispatch = useCallback((action: EditorSessionAction) => {
+    if (isActive(simulationRef.current) && isBlockedDuringSimulation(action)) {
+      return;
+    }
     const previous = currentSession.current;
     const next = editorSessionReducer(previous, action);
     if (next === previous) return;
@@ -103,6 +127,57 @@ export function MissionEditor() {
   }, [client]);
   const state = session.editor;
   const dispatch = (action: OrdinaryEditorAction) => sessionDispatch({ type: 'edit', action });
+
+  // ---- Simulation state ----
+  const [tab, setTab] = useState<EditorTab>('edit');
+  const [simulation, setSimulation] = useState<SimulationState>(createSimulationState);
+  const simulationRef = useRef(simulation);
+  simulationRef.current = simulation;
+
+  const simActive = isActive(simulation);
+
+  const simDispatch = useCallback((action: SimulationAction) => {
+    setSimulation((prev) => {
+      const next = simulationReducer(prev, action);
+      simulationRef.current = next;
+      return next;
+    });
+  }, []);
+
+  // Wire start to capture immutable route snapshot
+  const handleStart = useCallback(() => {
+    client.cancel();
+    sessionDispatch({ type: 'reset-agent' });
+    importRequest.current += 1;
+    setSaveTransaction(null);
+
+    const sess = currentSession.current;
+    const currentAnalysis = analyseDraft(sess.editor.draft);
+    const name = sess.editor.draft.name || 'Untitled route';
+    const waypointCount = sess.editor.draft.points.length;
+    const altitude = currentAnalysis.route.kind === 'calculated'
+      ? currentAnalysis.route.input.heightAboveTakeoffM
+      : Number(sess.editor.draft.height) || 0;
+    const currentGeometry = buildMapGeometry({
+      sourcePoints: currentAnalysis.sourcePoints,
+      route: currentAnalysis.route,
+      takeoff: currentAnalysis.takeoff,
+      target: currentAnalysis.target,
+    });
+    const snapshot: RouteSnapshot = {
+      name,
+      waypointCount,
+      plannedAltitudeM: altitude,
+      geometry: currentGeometry,
+    };
+    simDispatch({
+      type: 'start',
+      snapshot,
+    });
+    setTab('simulation');
+  }, [client, sessionDispatch, simDispatch]);
+
+  // ---- Existing editor state ----
   const [slotStatus, setSlotStatus] = useState<DraftSlotStatus>('checking');
   const [loadError, setLoadError] = useState<string | null>(null);
   const [importError, setImportError] = useState<string | null>(null);
@@ -125,7 +200,30 @@ export function MissionEditor() {
     revision: state.revision,
     takeoff: geometry.takeoff,
     target: geometry.target,
-  }), [geometry.points, geometry.takeoff, geometry.target, state.draft.points, state.revision, state.selectedPointId, state.tool]);
+    dragDisabled: simActive,
+  }), [geometry.points, geometry.takeoff, geometry.target, simActive, state.draft.points, state.revision, state.selectedPointId, state.tool]);
+
+  const draftSummary = useMemo<RouteSummary>(() => {
+    const altitude = analysis.route.kind === 'calculated'
+      ? analysis.route.input.heightAboveTakeoffM
+      : Number(state.draft.height) || 0;
+    return {
+      name: state.draft.name || 'Untitled route',
+      waypointCount: state.draft.points.length,
+      plannedAltitudeM: altitude,
+    };
+  }, [analysis.route, state.draft.height, state.draft.name, state.draft.points.length]);
+
+  const simulationView = useMemo<MapSimulationView | null>(() => {
+    if (tab !== 'simulation' && !simActive) return null;
+    const activeRouteGeometry = simActive && simulation.snapshot?.geometry
+      ? simulation.snapshot.geometry
+      : geometry;
+    return {
+      simulation,
+      geometry: activeRouteGeometry,
+    };
+  }, [tab, simActive, simulation, geometry]);
 
   useEffect(() => {
     setSlotStatus(readBrowserDraft().kind);
@@ -148,6 +246,7 @@ export function MissionEditor() {
   }
 
   function sendMessage(message: string): boolean {
+    if (isActive(simulationRef.current)) return false;
     const requestId = client.createRequestId();
     if (requestId === null) return false;
     const captured = captureAgentRequest(currentSession.current, {
@@ -191,8 +290,11 @@ export function MissionEditor() {
   function receiveResponse(response: NonNullable<Awaited<ReturnType<typeof client.send>>>) {
     sessionDispatch({ type: 'receive-response', response });
     const current = currentSession.current;
-    if (response.outcome.kind === 'proposed' && current.request.kind === 'finished'
-      && current.request.requestId === response.requestId && current.proposal === null) {
+    if (!isActive(simulationRef.current)
+      && response.outcome.kind === 'proposed'
+      && current.request.kind === 'finished'
+      && current.request.requestId === response.requestId
+      && current.proposal === null) {
       setCaptureError('The proposed change cannot be applied to this route. Ask for a valid height change.');
     }
   }
@@ -210,6 +312,7 @@ export function MissionEditor() {
   }
 
   function loadDraft() {
+    if (isActive(simulationRef.current)) return;
     importRequest.current += 1;
     const result = readBrowserDraft();
     setSlotStatus(result.kind);
@@ -222,7 +325,7 @@ export function MissionEditor() {
   }
 
   async function importBackup(file: File | undefined) {
-    if (!file) return;
+    if (!file || isActive(simulationRef.current)) return;
     const request = ++importRequest.current;
     const revision = currentSession.current.editor.revision;
     const missionBranchId = currentSession.current.missionBranchId;
@@ -230,7 +333,8 @@ export function MissionEditor() {
     try {
       const text = await file.text();
       if (request !== importRequest.current || revision !== currentSession.current.editor.revision
-        || missionBranchId !== currentSession.current.missionBranchId) return;
+        || missionBranchId !== currentSession.current.missionBranchId
+        || isActive(simulationRef.current)) return;
       const result = decodeBackup(text);
       if (!result.ok) {
         setImportError(`The backup is invalid and was not imported: ${result.issues[0]?.message ?? 'Check the backup file.'}`);
@@ -239,13 +343,15 @@ export function MissionEditor() {
       sessionDispatch({ type: 'import-route', missionBranchId: globalThis.crypto.randomUUID(), draft: result.value });
     } catch {
       if (request === importRequest.current && revision === currentSession.current.editor.revision
-        && missionBranchId === currentSession.current.missionBranchId) {
+        && missionBranchId === currentSession.current.missionBranchId
+        && !isActive(simulationRef.current)) {
         setImportError('The backup file could not be read and was not imported.');
       }
     }
   }
 
   function startNew() {
+    if (isActive(simulationRef.current)) return;
     importRequest.current += 1;
     sessionDispatch({ type: 'new-route', missionBranchId: globalThis.crypto.randomUUID() });
   }
@@ -260,7 +366,7 @@ export function MissionEditor() {
   }
 
   function openSave() {
-    if (saveTransaction !== null) return;
+    if (saveTransaction !== null || isActive(simulationRef.current)) return;
     saveInProgress.current = false;
     const current = currentSession.current;
     const analysis = analyseDraft(current.editor.draft);
@@ -278,7 +384,7 @@ export function MissionEditor() {
 
   function confirmSave(): 'close' | 'keep-open' {
     const transaction = saveTransaction;
-    if (transaction === null || saveInProgress.current) return 'keep-open';
+    if (transaction === null || saveInProgress.current || isActive(simulationRef.current)) return 'keep-open';
 
     const current = currentSession.current;
     if (transaction.revision !== current.editor.revision || transaction.missionBranchId !== current.missionBranchId) {
@@ -339,12 +445,31 @@ export function MissionEditor() {
           <span>Route name</span>
           <input
             aria-label="Route name"
+            disabled={simActive}
             onChange={(event) => dispatch({ type: 'set-name', value: event.currentTarget.value })}
             placeholder="Untitled route"
             value={state.draft.name}
           />
         </label>
         <div className={styles.topActions}>
+          <nav className={styles.editorTabs} aria-label="Editor view">
+            <button
+              aria-pressed={tab === 'edit'}
+              className={tab === 'edit' ? styles.tabActive : styles.tabButton}
+              onClick={() => setTab('edit')}
+              type="button"
+            >
+              Edit
+            </button>
+            <button
+              aria-pressed={tab === 'simulation'}
+              className={tab === 'simulation' ? styles.tabActive : styles.tabButton}
+              onClick={() => setTab('simulation')}
+              type="button"
+            >
+              Simulation
+            </button>
+          </nav>
           <div className={styles.statuses}>
             <span aria-label="Review status" className={styles.statusPill} role="status">
               <span className={styles.statusDot} />
@@ -354,10 +479,24 @@ export function MissionEditor() {
               {isSaved(state) ? 'Saved' : 'Unsaved'}
             </span>
           </div>
-          <button className={styles.secondaryButton} onClick={startNew} type="button">New</button>
-          <button className={styles.quietButton} onClick={openSave} type="button">Save</button>
+          <button className={styles.secondaryButton} disabled={simActive} onClick={startNew} type="button">New</button>
+          <button className={styles.quietButton} disabled={simActive} onClick={openSave} type="button">Save</button>
         </div>
       </header>
+
+      {/* Banner shown on Edit tab during active simulation */}
+      {tab === 'edit' && simActive && (
+        <div className={styles.simBanner} role="status">
+          Simulation running · Route editing paused.{' '}
+          <button
+            className={styles.secondaryButton}
+            onClick={() => setTab('simulation')}
+            type="button"
+          >
+            Back to Simulation
+          </button>
+        </div>
+      )}
 
       <div className={styles.workspace}>
         <section className={styles.mapColumn}>
@@ -366,7 +505,7 @@ export function MissionEditor() {
               <button
                 aria-pressed={state.tool === tool.value}
                 className={state.tool === tool.value ? styles.toolActive : styles.toolButton}
-                disabled={tool.value === 'set-target' && state.draft.framing.kind !== 'face-target'}
+                disabled={simActive || (tool.value === 'set-target' && state.draft.framing.kind !== 'face-target')}
                 key={tool.value}
                 onClick={() => dispatch({ type: 'set-tool', tool: tool.value })}
                 type="button"
@@ -375,11 +514,23 @@ export function MissionEditor() {
               </button>
             ))}
           </div>
-          <MissionMap
-            geometry={geometry}
-            onSourceAction={(action: MapSourceAction) => dispatch(action)}
-            sourceView={sourceView}
-          />
+          <div className={styles.mapContainer}>
+            <MissionMap
+              geometry={simActive && simulation.snapshot?.geometry ? simulation.snapshot.geometry : geometry}
+              onSourceAction={(action: MapSourceAction) => dispatch(action)}
+              simulationView={simulationView}
+              sourceView={sourceView}
+            >
+              {({ status: mapStatus }) => (tab === 'simulation' || simActive) && (
+                <SimulationOverlay
+                  draftWaypointCount={draftSummary.waypointCount}
+                  geometry={simActive && simulation.snapshot?.geometry ? simulation.snapshot.geometry : geometry}
+                  mapStatus={mapStatus}
+                  simulation={simulation}
+                />
+              )}
+            </MissionMap>
+          </div>
           <RoutePreview analysis={analysis} draft={state.draft} geometry={geometry} />
           <MissionChat
             key={session.missionBranchId}
@@ -393,13 +544,29 @@ export function MissionEditor() {
             onReset={() => { sessionDispatch({ type: 'reset-agent' }); client.reset(); }}
             onSend={sendMessage}
             onSession={changeAuthentication}
+            composeDisabled={simActive}
             pending={session.request.kind === 'hashing' || agent.turn.kind === 'loading'}
             state={agent}
           />
-          <ProposalReview session={session} dispatch={sessionDispatch} />
+          <ProposalReview session={session} dispatch={sessionDispatch} disabled={simActive} />
+          {/* Demo controls only visible on Simulation tab while active */}
+          {tab === 'simulation' && isActive(simulation) && (
+            <DemoControls simulation={simulation} onSimAction={simDispatch} />
+          )}
         </section>
 
-        <Inspector analysis={analysis} dispatch={dispatch} state={state} />
+        {tab === 'simulation' ? (
+          <aside className={styles.inspector} aria-label="Simulation inspector" role="region">
+            <SimulationPanel
+              draftSummary={draftSummary}
+              onSimAction={simDispatch}
+              onStart={handleStart}
+              simulation={simulation}
+            />
+          </aside>
+        ) : (
+          <Inspector analysis={analysis} dispatch={dispatch} state={state} disabled={simActive} />
+        )}
       </div>
 
       <footer className={styles.footer}>
@@ -408,8 +575,8 @@ export function MissionEditor() {
           <span aria-label="Draft storage status" role="status">{slotStatusText(slotStatus)}</span>
         </div>
         <div className={styles.futureActions}>
-          <button onClick={loadDraft} type="button">Load</button>
-          <button onClick={() => importInput.current?.click()} type="button">Import backup</button>
+          <button disabled={simActive} onClick={loadDraft} type="button">Load</button>
+          <button disabled={simActive} onClick={() => importInput.current?.click()} type="button">Import backup</button>
           <input
             accept="application/json,.json"
             aria-label="Import backup"

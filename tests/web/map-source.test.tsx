@@ -268,4 +268,96 @@ describe('map point adapter', () => {
     expect(harness.markers.size).toBe(0);
     harness.map.getContainer().remove();
   });
+
+  it('disables marker dragging during edit lock while preserving selection', () => {
+    const harness = makeMap();
+    const actions: MapSourceAction[] = [];
+    const initial = point(firstId, 37.7, -122.4);
+    const adapter = createMapSource(harness.map, view([initial], [firstId], { dragDisabled: true }), (action) => actions.push(action));
+    const marker = harness.map.getContainer().querySelector<HTMLButtonElement>('[aria-label="Waypoint 1"]');
+    if (marker === null) throw new Error('Expected a waypoint marker');
+
+    expect(marker.style.cursor).toBe('pointer');
+    sendPointer(marker, 'pointerdown', { pointerId: 1, button: 0, clientX: 100, clientY: 100 });
+    // Selection action is dispatched
+    expect(actions).toEqual([{ type: 'select-point', id: firstId }]);
+
+    // Drag move has no effect
+    sendPointer(window, 'pointermove', { pointerId: 1, clientX: 200, clientY: 200 });
+    expect(harness.markers.get(marker)?.coordinate).toEqual([-122.4, 37.7]);
+
+    // Drag up does not commit move-point
+    sendPointer(window, 'pointerup', { pointerId: 1 });
+    expect(actions).toEqual([{ type: 'select-point', id: firstId }]);
+
+    adapter.dispose();
+    harness.map.getContainer().remove();
+  });
+
+  it('cleans up an in-progress drag when edit lock engages', () => {
+    const harness = makeMap();
+    const actions: MapSourceAction[] = [];
+    const initial = point(firstId, 37.7, -122.4);
+    const adapter = createMapSource(harness.map, view([initial], [firstId]), (action) => actions.push(action));
+    const marker = harness.map.getContainer().querySelector<HTMLButtonElement>('[aria-label="Waypoint 1"]');
+    if (marker === null) throw new Error('Expected a waypoint marker');
+
+    // Start drag
+    sendPointer(marker, 'pointerdown', { pointerId: 2, button: 0, clientX: 100, clientY: 100 });
+    sendPointer(window, 'pointermove', { pointerId: 2, clientX: 150, clientY: 150 });
+    expect(harness.markers.get(marker)?.coordinate).not.toEqual([-122.4, 37.7]);
+
+    // Edit lock engages during drag
+    adapter.sync(view([initial], [firstId], { dragDisabled: true }));
+
+    // Marker coordinate snapped back, drag cancelled
+    expect(harness.markers.get(marker)?.coordinate).toEqual([-122.4, 37.7]);
+
+    // Releasing pointer does not dispatch move-point
+    sendPointer(window, 'pointerup', { pointerId: 2 });
+    expect(actions.filter((a) => a.type === 'move-point')).toHaveLength(0);
+
+    adapter.dispose();
+    harness.map.getContainer().remove();
+  });
+
+  it('restores normal marker dragging after edit lock is released', () => {
+    const harness = makeMap();
+    const actions: MapSourceAction[] = [];
+    const initial = point(firstId, 37.7, -122.4);
+    const adapter = createMapSource(harness.map, view([initial], [firstId], { dragDisabled: true }), (action) => actions.push(action));
+    const marker = harness.map.getContainer().querySelector<HTMLButtonElement>('[aria-label="Waypoint 1"]');
+    if (marker === null) throw new Error('Expected a waypoint marker');
+
+    expect(marker.style.cursor).toBe('pointer');
+
+    // Unlock editing (simulation ended)
+    adapter.sync(view([initial], [firstId], { dragDisabled: false }));
+    expect(marker.style.cursor).toBe('');
+
+    // Now drag works
+    sendPointer(marker, 'pointerdown', { pointerId: 3, button: 0, clientX: 200, clientY: 100 });
+    sendPointer(window, 'pointermove', { pointerId: 3, clientX: 220, clientY: 120 });
+    sendPointer(window, 'pointerup', { pointerId: 3 });
+
+    expect(actions).toEqual([
+      { type: 'select-point', id: firstId },
+      { type: 'move-point', id: firstId, coordinate: { latitude: '37.72', longitude: '-122.38' } },
+    ]);
+
+    adapter.dispose();
+    harness.map.getContainer().remove();
+  });
+
+  it('ignores map canvas clicks when dragDisabled is true', () => {
+    const harness = makeMap();
+    const actions: MapSourceAction[] = [];
+    const adapter = createMapSource(harness.map, view([], [], { tool: 'add-points', dragDisabled: true }), (action) => actions.push(action));
+
+    harness.click(-122.4, 37.7);
+    expect(actions).toHaveLength(0);
+
+    adapter.dispose();
+    harness.map.getContainer().remove();
+  });
 });

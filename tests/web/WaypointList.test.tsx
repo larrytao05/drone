@@ -72,4 +72,23 @@ describe('controlled waypoint list', () => {
     expect(screen.getByRole('button', { name: 'Delete waypoint 100' })).toBeTruthy();
     expect(list.getAllByRole('listitem')[99]?.getAttribute('aria-current')).toBe('true');
   });
+
+  it('disables reorder and delete buttons when disabled prop is true while preserving selection', () => {
+    const dispatch = vi.fn<Dispatch<EditorAction>>();
+    render(<WaypointList disabled={true} dispatch={dispatch} points={points} selectedPointId={null} />);
+
+    const row = within(screen.getByRole('list', { name: 'Waypoint order' })).getAllByRole('listitem')[0];
+    if (!row) throw new Error('First waypoint row should exist');
+
+    const selectButton = within(row).getByRole('button', { name: 'Select waypoint 1' });
+    const reorderButton = within(row).getByRole('button', { name: 'Reorder waypoint 1' });
+    const deleteButton = within(row).getByRole('button', { name: 'Delete waypoint 1' });
+
+    expect(selectButton.hasAttribute('disabled')).toBe(false);
+    expect(reorderButton.hasAttribute('disabled')).toBe(true);
+    expect(deleteButton.hasAttribute('disabled')).toBe(true);
+
+    fireEvent.click(selectButton);
+    expect(dispatch).toHaveBeenCalledExactlyOnceWith({ type: 'select-point', id: firstId });
+  });
 });

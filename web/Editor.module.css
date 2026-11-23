@@ -681,6 +681,8 @@
     grid-column: auto;
     grid-row: 3;
     padding: 0;
+    flex-wrap: wrap;
+    gap: 0.5rem;
   }
 
   .statuses {
@@ -942,4 +944,51 @@
   .chatSignIn .field {
     flex-basis: 100%;
   }
+}
+
+/* ---- Simulation integration (WEB-SIM-1) ---- */
+
+.editorTabs { display: flex; gap: 0.3rem; }
+
+.tabButton,
+.tabActive {
+  min-height: 2.1rem;
+  padding: 0.35rem 0.7rem;
+  border: 1px solid var(--line);
+  border-radius: 0.35rem;
+  background: var(--surface-raised);
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.tabActive {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #fff;
+}
+
+.tabButton:hover { border-color: var(--muted); }
+
+.simBanner {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.65rem 1.5rem;
+  background: var(--surface);
+  border-bottom: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+
+.inspectorFieldset { display: contents; border: 0; margin: 0; padding: 0; min-inline-size: 0; }
+
+.mapContainer {
+  position: relative;
+  min-height: 25rem;
+  display: flex;
+  flex-direction: column;
 }

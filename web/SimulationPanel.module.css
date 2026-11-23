@@ -1,0 +1,109 @@
+.simPanel {
+  display: grid;
+  gap: 0.85rem;
+}
+
+.simPanel h2 {
+  margin: 0 0 0.15rem;
+  font-size: 1.05rem;
+}
+
+.simPanel h3 {
+  margin: 0.5rem 0 0.25rem;
+  font-size: 0.85rem;
+}
+
+.simRouteSummary {
+  display: grid;
+  gap: 0.2rem;
+}
+
+.simRouteName {
+  margin: 0;
+  font-size: 0.92rem;
+}
+
+.simMeta {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.simTelemetry {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.3rem 0.6rem;
+  margin: 0.4rem 0 0.6rem;
+  font-size: 0.82rem;
+}
+
+.simTelemetry dt {
+  color: var(--muted);
+}
+
+.simTelemetry dd {
+  margin: 0;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.simActions {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.simPrimary {
+  min-height: 2.35rem;
+  padding: 0.45rem 0.8rem;
+  border: 1px solid var(--accent);
+  border-radius: 0.35rem;
+  background: var(--accent);
+  color: #fff;
+  font: inherit;
+  font-size: 0.8rem;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.simPrimary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.secondaryButton {
+  min-height: 2.1rem;
+  padding: 0.35rem 0.7rem;
+  border: 1px solid var(--line);
+  border-radius: 0.35rem;
+  background: var(--surface-raised);
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.secondaryButton:hover {
+  border-color: var(--muted);
+}
+
+.simEvents {
+  margin-top: 0.25rem;
+}
+
+.simEvents ol {
+  margin: 0.25rem 0 0;
+  padding-left: 1.3rem;
+  font-size: 0.78rem;
+  line-height: 1.6;
+}
+
+.simAdvisory {
+  margin: 0.4rem 0 0;
+  padding: 0.6rem 0.75rem;
+  border-radius: 0.35rem;
+  background: var(--surface-subtle);
+  font-size: 0.78rem;
+  line-height: 1.5;
+}
