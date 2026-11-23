@@ -21,6 +21,7 @@ import { Inspector } from './Inspector';
 import { ReviewDialog } from './ReviewDialog';
 import { RoutePreview } from './RoutePreview';
 import { MissionMap } from './MissionMap';
+import type { Coordinate } from '@drone/mission-planner';
 import { MissionChat } from './MissionChat';
 import { ProposalReview } from './ProposalReview';
 import { SimulationPanel } from './SimulationPanel';
@@ -163,6 +164,7 @@ export function MissionEditor() {
     client.cancel();
     sessionDispatch({ type: 'reset-agent' });
     importRequest.current += 1;
+    setImportFocus(null);
     setSaveTransaction(null);
     setSimValidationError(null);
 
@@ -205,8 +207,12 @@ export function MissionEditor() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [importError, setImportError] = useState<string | null>(null);
   const [saveTransaction, setSaveTransaction] = useState<SaveTransaction | null>(null);
+  const [importFocus, setImportFocus] = useState<Coordinate | null>(null);
   const importInput = useRef<HTMLInputElement>(null);
   const importRequest = useRef(0);
+  const consumeImportFocus = useCallback((focus: Coordinate) => {
+    setImportFocus((pending) => pending === focus ? null : pending);
+  }, []);
   const saveInProgress = useRef(false);
   const analysis = useMemo(() => analyseDraft(state.draft), [state.draft]);
   const geometry = useMemo(() => buildMapGeometry({
@@ -337,6 +343,7 @@ export function MissionEditor() {
   function loadDraft() {
     if (isSimulationEditLocked(simulationRef.current)) return;
     importRequest.current += 1;
+    setImportFocus(null);
     const result = readBrowserDraft();
     setSlotStatus(result.kind);
     if (result.kind !== 'success') {
@@ -364,6 +371,7 @@ export function MissionEditor() {
         return;
       }
       sessionDispatch({ type: 'import-route', missionBranchId: globalThis.crypto.randomUUID(), draft: result.value });
+      setImportFocus(analyseDraft(result.value).sourcePoints[0]?.coordinate ?? null);
     } catch {
       if (request === importRequest.current && revision === currentSession.current.editor.revision
         && missionBranchId === currentSession.current.missionBranchId
@@ -376,6 +384,7 @@ export function MissionEditor() {
   function startNew() {
     if (isSimulationEditLocked(simulationRef.current)) return;
     importRequest.current += 1;
+    setImportFocus(null);
     sessionDispatch({ type: 'new-route', missionBranchId: globalThis.crypto.randomUUID() });
   }
 
@@ -539,6 +548,8 @@ export function MissionEditor() {
           </div>
           <div className={styles.mapContainer}>
             <MissionMap
+              cameraFocus={importFocus}
+              onCameraFocusHandled={consumeImportFocus}
               geometry={simActive && simulation.snapshot?.geometry ? simulation.snapshot.geometry : geometry}
               onSourceAction={(action: MapSourceAction) => dispatch(action)}
               simulationView={simulationView}

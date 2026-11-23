@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
+import type { Coordinate } from '@drone/mission-planner';
 import type { ReactNode } from 'react';
 import type { StyleSpecification } from 'maplibre-gl';
 import { z } from 'zod';
@@ -54,10 +55,12 @@ type MissionMapProps = Readonly<{
   sourceView: MapSourceView;
   onSourceAction: (action: MapSourceAction) => void;
   simulationView?: MapSimulationView | null;
+  cameraFocus?: Coordinate | null;
+  onCameraFocusHandled?: (focus: Coordinate) => void;
   children?: ReactNode | ((context: MapChildrenContext) => ReactNode);
 }>;
 
-export function MissionMap({ geometry, sourceView, onSourceAction, simulationView, children }: MissionMapProps) {
+export function MissionMap({ geometry, sourceView, onSourceAction, simulationView, cameraFocus, onCameraFocusHandled, children }: MissionMapProps) {
   const container = useRef<HTMLDivElement>(null);
   const frameRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<import('maplibre-gl').Map | null>(null);
@@ -92,6 +95,18 @@ export function MissionMap({ geometry, sourceView, onSourceAction, simulationVie
   useEffect(() => {
     simulationAdapterRef.current?.sync(simulationView ?? null);
   }, [simulationView]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!cameraFocus || status !== 'ready' || map === null) return;
+    onCameraFocusHandled?.(cameraFocus);
+    try {
+      setMoving(true);
+      map.easeTo({ center: [cameraFocus.longitudeDeg, cameraFocus.latitudeDeg], duration: 350 });
+    } catch {
+      setMoving(false);
+    }
+  }, [cameraFocus, onCameraFocusHandled, status]);
 
   useEffect(() => {
     let disposed = false;
