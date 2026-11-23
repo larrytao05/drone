@@ -3,6 +3,8 @@ import {
   isAllowedLocalOrigin,
   isLoopbackHost,
   simulationCommandRequestSchema,
+  simulationRouteInputSchema,
+  simulationStartRequestSchema,
   simulationStatusSchema,
   type SimulationStatus,
 } from "../src/simulation-contract.js";
@@ -112,6 +114,15 @@ describe("simulation-contract", () => {
         holdRequested: true,
         holdConfirmed: true,
         fresh: true,
+        cleanupCompleted: false,
+        route: {
+          name: "Test route",
+          plannedAltitudeM: 10,
+          waypoints: [
+            { latitudeDeg: 47.397743, longitudeDeg: 8.545594, altitudeM: 10 },
+            { latitudeDeg: 47.398043, longitudeDeg: 8.545594, altitudeM: 10 },
+          ],
+        },
         telemetry: {
           timestamp: "2026-11-23T00:00:00.000Z",
           sampleAgeMs: 120,
@@ -149,6 +160,7 @@ describe("simulation-contract", () => {
         holdRequested: false,
         holdConfirmed: false,
         fresh: true,
+        cleanupCompleted: false,
         telemetry: null,
         events: [
           { seq: 1, timestamp: "2026-11-23T00:00:00.000Z", label: "Simulation teardown initiated" },
@@ -160,7 +172,7 @@ describe("simulation-contract", () => {
       expect(parseResult.success).toBe(true);
     });
 
-    it("validates an error status object", () => {
+    it("validates an error status object with cleanupCompleted", () => {
       const status: SimulationStatus = {
         runId: "sim_test_failed",
         seq: 2,
@@ -169,6 +181,7 @@ describe("simulation-contract", () => {
         holdRequested: false,
         holdConfirmed: false,
         fresh: false,
+        cleanupCompleted: true,
         telemetry: null,
         events: [],
         error: {
@@ -180,6 +193,52 @@ describe("simulation-contract", () => {
 
       const parseResult = simulationStatusSchema.safeParse(status);
       expect(parseResult.success).toBe(true);
+    });
+
+    it("validates start requests with and without route input", () => {
+      expect(simulationStartRequestSchema.safeParse({ action: "start" }).success).toBe(true);
+      expect(
+        simulationStartRequestSchema.safeParse({
+          action: "start",
+          route: {
+            plannedAltitudeM: 12,
+            waypoints: [
+              { latitudeDeg: 47.39, longitudeDeg: 8.54, altitudeM: 12 },
+              { latitudeDeg: 47.40, longitudeDeg: 8.55, altitudeM: 12 },
+            ],
+          },
+        }).success
+      ).toBe(true);
+      expect(
+        simulationRouteInputSchema.safeParse({
+          plannedAltitudeM: -5,
+          waypoints: [],
+        }).success
+      ).toBe(false);
+      expect(
+        simulationRouteInputSchema.safeParse({
+          plannedAltitudeM: 150,
+          waypoints: [
+            { latitudeDeg: 47.39, longitudeDeg: 8.54, altitudeM: 10 },
+            { latitudeDeg: 47.40, longitudeDeg: 8.55, altitudeM: 10 },
+          ],
+        }).success
+      ).toBe(false);
+      expect(
+        simulationRouteInputSchema.safeParse({
+          plannedAltitudeM: 10,
+          waypoints: [{ latitudeDeg: 47.39, longitudeDeg: 8.54, altitudeM: 10 }],
+        }).success
+      ).toBe(false);
+      expect(
+        simulationRouteInputSchema.safeParse({
+          plannedAltitudeM: 10,
+          waypoints: [
+            { latitudeDeg: 47.39, longitudeDeg: 8.54, altitudeM: 10 },
+            { latitudeDeg: 47.40, longitudeDeg: 8.55, altitudeM: 150 },
+          ],
+        }).success
+      ).toBe(false);
     });
   });
 });

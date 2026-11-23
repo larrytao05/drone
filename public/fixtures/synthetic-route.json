@@ -1,0 +1,39 @@
+{
+  "version": 1,
+  "draft": {
+    "name": "Synthetic survey route",
+    "points": [
+      {
+        "id": "11111111-2222-4333-8444-555555555551",
+        "coordinate": {
+          "latitude": "47.398043",
+          "longitude": "8.545594"
+        }
+      },
+      {
+        "id": "11111111-2222-4333-8444-555555555552",
+        "coordinate": {
+          "latitude": "47.398043",
+          "longitude": "8.545994"
+        }
+      },
+      {
+        "id": "11111111-2222-4333-8444-555555555553",
+        "coordinate": {
+          "latitude": "47.397743",
+          "longitude": "8.545994"
+        }
+      }
+    ],
+    "height": "10",
+    "framing": {
+      "kind": "fixed",
+      "heading": "0",
+      "pitch": "0"
+    },
+    "takeoff": {
+      "latitude": "47.397743",
+      "longitude": "8.545594"
+    }
+  }
+}

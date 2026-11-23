@@ -16,6 +16,12 @@ function network(authenticated = true) {
   const requests: { request: AgentRequest; signal: AbortSignal | null | undefined; reply: (response: Response) => void }[] = [];
   const sessions: string[] = [];
   const fetch = vi.fn<typeof globalThis.fetch>(async (url, init) => {
+    if (url === '/api/simulation') {
+      return json({ kind: 'local' });
+    }
+    if (url === '/api/map-config') {
+      return json({ defaultCenter: [-122.4194, 37.7749] });
+    }
     if (url === '/api/agent/session') {
       const action = agentSessionRequestSchema.parse(JSON.parse(String(init?.body)));
       sessions.push(action.action);

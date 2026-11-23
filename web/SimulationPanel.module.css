@@ -107,3 +107,27 @@
   font-size: 0.78rem;
   line-height: 1.5;
 }
+
+.simBadge {
+  display: inline-block;
+  padding: 0.15rem 0.45rem;
+  border-radius: 0.25rem;
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: var(--muted);
+  background: var(--surface-subtle);
+  border: 1px solid var(--line);
+  margin-bottom: 0.25rem;
+  width: fit-content;
+}
+
+.simError {
+  margin: 0.25rem 0 0;
+  padding: 0.5rem 0.65rem;
+  border-radius: 0.35rem;
+  background: rgba(220, 38, 38, 0.1);
+  color: #ef4444;
+  font-size: 0.78rem;
+  line-height: 1.4;
+  border: 1px solid rgba(220, 38, 38, 0.2);
+}

@@ -1,7 +1,11 @@
 import "server-only";
 import { createSimulationBridgeHandlers } from "../../../web/server/simulation-bridge.ts";
 
-const bridge = createSimulationBridgeHandlers({ dockerMode: true });
+declare global {
+  var droneSimulationBridgeHandlers: ReturnType<typeof createSimulationBridgeHandlers> | undefined;
+}
+
+const bridge = (globalThis.droneSimulationBridgeHandlers ??= createSimulationBridgeHandlers({ dockerMode: true }));
 
 function isBridgeOptedIn(): boolean {
   if (process.env.NODE_ENV === "production") {

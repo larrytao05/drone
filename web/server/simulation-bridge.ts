@@ -9,10 +9,12 @@ import {
   simulationCommandRequestSchema,
   simulationErrorCodeSchema,
   simulationPhaseSchema,
+  simulationRouteInputSchema,
   type SimulationCommandRequest,
   type SimulationError,
   type SimulationEvent,
   type SimulationPhase,
+  type SimulationRouteInput,
   type SimulationStatus,
   type SimulationTelemetry,
 } from "../../src/simulation-contract.ts";
@@ -99,6 +101,7 @@ export class SimulationBridgeSession {
   private lineBuffer = "";
   private runStartedAt = 0;
   private activeRun: ActiveRun | null = null;
+  private executedRoute: SimulationRouteInput | null = null;
 
   private readonly spawnRunner: SpawnRunner;
   private readonly repoRoot: string;
@@ -190,6 +193,8 @@ export class SimulationBridgeSession {
       currentTelemetry = { ...this.telemetry, sampleAgeMs };
     }
 
+    const cleanupCompleted = this.activeRun ? this.activeRun.cleanupCompleted : true;
+
     return {
       runId: this.runId,
       seq: this.seq,
@@ -198,18 +203,33 @@ export class SimulationBridgeSession {
       holdRequested: this.holdRequested,
       holdConfirmed: this.holdConfirmed,
       fresh,
+      cleanupCompleted,
+      route: this.executedRoute,
       telemetry: currentTelemetry,
       events: [...this.events],
       error: this.error ? { ...this.error } : null,
     };
   }
 
-  public async start(): Promise<SessionResult> {
+  public async start(route?: SimulationRouteInput): Promise<SessionResult> {
     if (this.activeRun !== null && !this.activeRun.cleanupCompleted) {
       return this.result(409, {
         code: "ALREADY_RUNNING",
         message: `A simulation run (${this.activeRun.runId}) is already active or undergoing teardown.`,
       });
+    }
+
+    if (route) {
+      const parsed = simulationRouteInputSchema.safeParse(route);
+      if (!parsed.success) {
+        return this.result(400, {
+          code: "INVALID_REQUEST",
+          message: `Simulation route validation failed: ${parsed.error.issues.map((i) => i.message).join(", ")}`,
+        });
+      }
+      this.executedRoute = parsed.data;
+    } else {
+      this.executedRoute = null;
     }
 
     const newRunId = generateRunId(this.now());
@@ -256,6 +276,11 @@ export class SimulationBridgeSession {
       String(Math.round(this.maxRunDurationMs / 1000)),
     ];
     if (this.dockerMode) args.push("--docker");
+    if (route) {
+      args.push("--alt", String(route.plannedAltitudeM));
+      if (route.speedMs) args.push("--speed", String(route.speedMs));
+      args.push("--route-json", JSON.stringify(route.waypoints));
+    }
 
     try {
       run.child = this.spawnRunner("python3", args, {
@@ -420,6 +445,12 @@ export class SimulationBridgeSession {
       case "hold_confirmed": {
         if (typeof message.hold_confirmed === "boolean") {
           this.holdConfirmed = message.hold_confirmed;
+          this.incrementSeq();
+        }
+        break;
+      }
+      case "route": {
+        if (Array.isArray(message.waypoints)) {
           this.incrementSeq();
         }
         break;
@@ -800,7 +831,7 @@ export function createSimulationBridgeHandlers(options?: SimulationBridgeOptions
 
     switch (command.action) {
       case "start": {
-        const res = await session.start();
+        const res = await session.start(command.route);
         return respond(res);
       }
       case "status": {
