@@ -67,7 +67,8 @@ export function validateEditorRouteForSimulation(
   const rawRoute = {
     name: draft.name || 'Untitled route',
     plannedAltitudeM: altitude,
-    waypoints: plannedWaypoints.map((wp) => ({
+    waypoints: plannedWaypoints.map((wp, i) => ({
+      id: draft.points[i]?.id ?? `wp-${i + 1}`,
       latitudeDeg: wp.coordinate.latitudeDeg,
       longitudeDeg: wp.coordinate.longitudeDeg,
       altitudeM: altitude,
@@ -148,6 +149,8 @@ export function projectStatusToState(
     snapshot,
     progress: 0,
     tick: status.events.length,
+    activeLeg: status.activeLeg ?? (!status.fresh && currentState.activeLeg ? currentState.activeLeg : null),
+    blockedLeg: status.blockedLeg ?? currentState.blockedLeg ?? null,
     telemetry: status.telemetry
       ? {
           lat: status.telemetry.position.lat,
@@ -158,7 +161,7 @@ export function projectStatusToState(
           timestamp: status.telemetry.timestamp,
           sampleAgeMs: status.telemetry.sampleAgeMs,
         }
-      : null,
+      : (!status.fresh && currentState.telemetry ? currentState.telemetry : null),
     events: status.events.map((e) => ({
       tick: e.seq,
       label: e.label,
@@ -341,7 +344,7 @@ export function createSimulationClient(options: SimulationClientOptions = {}) {
     }
 
     if (!res.ok) {
-      if (res.status === 404 || res.status === 405) {
+      if ((res.status === 404 || res.status === 405) && !(state.runId && state.cleanupCompleted === false)) {
         // Confirmed disabled: endpoint doesn't exist
         bridgeAvailable = false;
         setState({ ...state, mode: 'fixture', cleanupCompleted: true, ownershipChecking: false });

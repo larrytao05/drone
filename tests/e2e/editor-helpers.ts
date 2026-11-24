@@ -88,3 +88,8 @@ export async function locate(page: Page, coordinate: { latitude: number; longitu
   await page.getByRole('button', { name: 'Locate' }).click();
   await expect(mapRegion(page)).toHaveAttribute('aria-busy', 'false');
 }
+
+export function isMapTilerSatelliteTile(url: string): boolean {
+  const { hostname, pathname } = new URL(url);
+  return hostname === 'api.maptiler.com' && /^\/tiles\/satellite-v2\/\d+\/\d+\/\d+(?:\.jpg)?$/.test(pathname);
+}

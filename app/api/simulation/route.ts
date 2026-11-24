@@ -23,13 +23,13 @@ function disabledResponse(): Response {
     JSON.stringify({
       ok: false,
       error: {
-        code: "FORBIDDEN_ORIGIN",
+        code: "PREREQUISITE_MISSING",
         message:
           "Simulation bridge is disabled. Set ENABLE_SIMULATION_BRIDGE=1 to enable in dev/local environments.",
       },
     }),
     {
-      status: 403,
+      status: 404,
       headers: {
         "content-type": "application/json; charset=utf-8",
         "cache-control": "no-store",

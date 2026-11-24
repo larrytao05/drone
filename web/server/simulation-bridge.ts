@@ -8,11 +8,13 @@ import {
   SIMULATION_MAX_SAMPLE_AGE_MS,
   simulationCommandRequestSchema,
   simulationErrorCodeSchema,
+  simulationLegStageSchema,
   simulationPhaseSchema,
   simulationRouteInputSchema,
   type SimulationCommandRequest,
   type SimulationError,
   type SimulationEvent,
+  type SimulationLegProgress,
   type SimulationPhase,
   type SimulationRouteInput,
   type SimulationStatus,
@@ -102,6 +104,8 @@ export class SimulationBridgeSession {
   private runStartedAt = 0;
   private activeRun: ActiveRun | null = null;
   private executedRoute: SimulationRouteInput | null = null;
+  private activeLeg: SimulationLegProgress | null = null;
+  private blockedLeg: SimulationLegProgress | null = null;
 
   private readonly spawnRunner: SpawnRunner;
   private readonly repoRoot: string;
@@ -206,6 +210,8 @@ export class SimulationBridgeSession {
       cleanupCompleted,
       route: this.executedRoute,
       telemetry: currentTelemetry,
+      activeLeg: this.activeLeg,
+      blockedLeg: this.blockedLeg,
       events: [...this.events],
       error: this.error ? { ...this.error } : null,
     };
@@ -247,6 +253,8 @@ export class SimulationBridgeSession {
     this.telemetryReceivedAt = 0;
     this.events = [];
     this.error = null;
+    this.activeLeg = null;
+    this.blockedLeg = null;
     this.trackedContainers = [...containers];
     this.lineBuffer = "";
 
@@ -280,6 +288,9 @@ export class SimulationBridgeSession {
       args.push("--alt", String(route.plannedAltitudeM));
       if (route.speedMs) args.push("--speed", String(route.speedMs));
       args.push("--route-json", JSON.stringify(route.waypoints));
+      if (route.waypoints.length >= 4) {
+        args.push("--block-leg", "1");
+      }
     }
 
     try {
@@ -373,6 +384,9 @@ export class SimulationBridgeSession {
         if (parsed.success) {
           if (this.activeRun?.teardownInitiated || this.phase === "failed" || parsed.data === "ended") break;
           this.phase = parsed.data;
+          if (this.phase === "completed") {
+            this.activeLeg = { stage: "completed" };
+          }
           if (this.phase === "running") {
             this.holdRequested = false;
             this.holdConfirmed = false;
@@ -392,6 +406,29 @@ export class SimulationBridgeSession {
             this.resumePending = false;
             this.error = null;
           }
+        }
+        break;
+      }
+      case "leg": {
+        const legData = (typeof message.leg === "object" && message.leg !== null ? message.leg : message) as Record<string, unknown>;
+        const stageParsed = simulationLegStageSchema.safeParse(legData.stage);
+        if (stageParsed.success) {
+          const legIndex = typeof legData.leg_index === "number" ? legData.leg_index : typeof legData.legIndex === "number" ? legData.legIndex : undefined;
+          const fromWp = typeof legData.from_waypoint_index === "number" ? legData.from_waypoint_index : typeof legData.fromWaypointIndex === "number" ? legData.fromWaypointIndex : (legIndex !== undefined ? legIndex : undefined);
+          const toWp = typeof legData.to_waypoint_index === "number" ? legData.to_waypoint_index : typeof legData.toWaypointIndex === "number" ? legData.toWaypointIndex : (legIndex !== undefined ? legIndex + 1 : undefined);
+          const fromId = fromWp !== undefined ? this.executedRoute?.waypoints[fromWp]?.id : undefined;
+          const toId = toWp !== undefined ? this.executedRoute?.waypoints[toWp]?.id : undefined;
+          this.activeLeg = {
+            stage: stageParsed.data,
+            ...(legIndex !== undefined ? { legIndex } : {}),
+            ...(fromWp !== undefined ? { fromWaypointIndex: fromWp } : {}),
+            ...(toWp !== undefined ? { toWaypointIndex: toWp } : {}),
+            ...(fromId ? { fromWaypointId: fromId } : {}),
+            ...(toId ? { toWaypointId: toId } : {}),
+            ...(typeof legData.leg_progress_m === "number" ? { legProgressM: legData.leg_progress_m } : {}),
+            ...(typeof legData.leg_total_distance_m === "number" ? { legTotalDistanceM: legData.leg_total_distance_m } : {}),
+          };
+          this.incrementSeq();
         }
         break;
       }
@@ -424,6 +461,27 @@ export class SimulationBridgeSession {
               northSpeedMs: message.north_speed_m_s,
             },
           };
+          if (typeof message.active_leg === "object" && message.active_leg !== null) {
+            const legData = message.active_leg as Record<string, unknown>;
+            const stageParsed = simulationLegStageSchema.safeParse(legData.stage);
+            if (stageParsed.success) {
+              const legIndex = typeof legData.leg_index === "number" ? legData.leg_index : typeof legData.legIndex === "number" ? legData.legIndex : undefined;
+              const fromWp = typeof legData.from_waypoint_index === "number" ? legData.from_waypoint_index : typeof legData.fromWaypointIndex === "number" ? legData.fromWaypointIndex : (legIndex !== undefined ? legIndex : undefined);
+              const toWp = typeof legData.to_waypoint_index === "number" ? legData.to_waypoint_index : typeof legData.toWaypointIndex === "number" ? legData.toWaypointIndex : (legIndex !== undefined ? legIndex + 1 : undefined);
+              const fromId = fromWp !== undefined ? this.executedRoute?.waypoints[fromWp]?.id : undefined;
+              const toId = toWp !== undefined ? this.executedRoute?.waypoints[toWp]?.id : undefined;
+              this.activeLeg = {
+                stage: stageParsed.data,
+                ...(legIndex !== undefined ? { legIndex } : {}),
+                ...(fromWp !== undefined ? { fromWaypointIndex: fromWp } : {}),
+                ...(toWp !== undefined ? { toWaypointIndex: toWp } : {}),
+                ...(fromId ? { fromWaypointId: fromId } : {}),
+                ...(toId ? { toWaypointId: toId } : {}),
+                ...(typeof legData.leg_progress_m === "number" ? { legProgressM: legData.leg_progress_m } : {}),
+                ...(typeof legData.leg_total_distance_m === "number" ? { legTotalDistanceM: legData.leg_total_distance_m } : {}),
+              };
+            }
+          }
           this.incrementSeq();
         }
         break;
@@ -431,6 +489,21 @@ export class SimulationBridgeSession {
       case "blockage": {
         if (typeof message.blocked === "boolean") {
           this.blocked = message.blocked;
+          if (this.blocked) {
+            const legIdx = typeof message.leg_index === "number" ? message.leg_index : (this.activeLeg?.legIndex ?? 1);
+            const fromWp = legIdx;
+            const toWp = legIdx + 1;
+            const fromId = this.executedRoute?.waypoints[fromWp]?.id;
+            const toId = this.executedRoute?.waypoints[toWp]?.id;
+            this.blockedLeg = {
+              stage: "leg",
+              legIndex: legIdx,
+              fromWaypointIndex: fromWp,
+              toWaypointIndex: toWp,
+              ...(fromId ? { fromWaypointId: fromId } : {}),
+              ...(toId ? { toWaypointId: toId } : {}),
+            };
+          }
           this.incrementSeq();
         }
         break;

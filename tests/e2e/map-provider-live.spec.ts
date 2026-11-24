@@ -1,11 +1,10 @@
 import { expect, test } from '@playwright/test';
-import { draftFixture, importDraft, locate, mapRegion, openBlankEditor, selectWaypoint } from './editor-helpers.js';
+import { draftFixture, importDraft, isMapTilerSatelliteTile, locate, mapRegion, openBlankEditor, selectWaypoint } from './editor-helpers.js';
 
 test('provider tiles render and native source attribution stays visible at 320px and 1024px', async ({ page }) => {
   let successfulImageTiles = 0;
   page.on('response', (response) => {
-    if (new URL(response.url()).hostname === 'api.maptiler.com'
-      && /\/tiles\/satellite-v2\/\d+\/\d+\/\d+\.jpg$/.test(new URL(response.url()).pathname)
+    if (isMapTilerSatelliteTile(response.url())
       && response.ok()) successfulImageTiles += 1;
   });
 
@@ -77,12 +76,11 @@ test('a tile failure after successful imagery load removes the map and preserves
   let failTiles = false;
   let successfulImageTiles = 0;
   page.on('response', (response) => {
-    if (/\/tiles\/satellite-v2\/\d+\/\d+\/\d+\.jpg$/.test(new URL(response.url()).pathname)
+    if (isMapTilerSatelliteTile(response.url())
       && response.ok()) successfulImageTiles += 1;
   });
   await page.route('https://api.maptiler.com/**', async (route) => {
-    const url = new URL(route.request().url());
-    if (failTiles && /\/tiles\/satellite-v2\/\d+\/\d+\/\d+\.jpg$/.test(url.pathname)) await route.abort();
+    if (failTiles && isMapTilerSatelliteTile(route.request().url())) await route.abort();
     else await route.continue();
   });
   await page.setViewportSize({ width: 1024, height: 900 });

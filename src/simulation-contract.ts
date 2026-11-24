@@ -8,6 +8,7 @@ export const simulationPhaseSchema = z.enum([
   "starting",
   "running",
   "holding",
+  "completed",
   "ending",
   "ended",
   "failed",
@@ -69,7 +70,23 @@ export const simulationErrorSchema = z.strictObject({
 });
 export type SimulationError = z.infer<typeof simulationErrorSchema>;
 
+export const simulationLegStageSchema = z.enum(["takeoff", "leg", "completed"]);
+export type SimulationLegStage = z.infer<typeof simulationLegStageSchema>;
+
+export const simulationLegProgressSchema = z.strictObject({
+  stage: simulationLegStageSchema,
+  legIndex: z.number().int().nonnegative().optional(),
+  fromWaypointIndex: z.number().int().nonnegative().optional(),
+  toWaypointIndex: z.number().int().nonnegative().optional(),
+  fromWaypointId: z.string().optional(),
+  toWaypointId: z.string().optional(),
+  legProgressM: z.number().finite().optional(),
+  legTotalDistanceM: z.number().finite().optional(),
+});
+export type SimulationLegProgress = z.infer<typeof simulationLegProgressSchema>;
+
 export const simulationWaypointInputSchema = z.strictObject({
+  id: z.string().optional(),
   latitudeDeg: z.number().finite().min(-90).max(90),
   longitudeDeg: z.number().finite().min(-180).max(180),
   altitudeM: z.number().finite().positive().max(120),
@@ -96,6 +113,8 @@ export const simulationStatusSchema = z.strictObject({
   cleanupCompleted: z.boolean(),
   route: simulationRouteInputSchema.nullable().optional(),
   telemetry: simulationTelemetrySchema.nullable(),
+  activeLeg: simulationLegProgressSchema.nullable().optional(),
+  blockedLeg: simulationLegProgressSchema.nullable().optional(),
   events: z.array(simulationEventSchema),
   error: simulationErrorSchema.nullable(),
 });

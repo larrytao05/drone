@@ -38,6 +38,16 @@ Send a message to request a height change. The editor calculates the comparison 
 
 The managed local browser suites include fake-endpoint assistant journeys and make no paid model calls.
 
+## Full simulator verification
+
+With Docker running, a MapTiler key in `.env.local`, and `OPENROUTER_API_KEY` in your shell environment, run:
+
+```sh
+DRONE_MAP_ENV_FILE=.env.local npm run test:e2e:sim:full
+```
+
+This starts a separate loopback editor and verifies MapTiler satellite tiles, browser sign-in, a real OpenRouter free-model reply, and the three-leg PX4 journey through a hold on leg two, reload recovery, explicit resume, final waypoint completion, and teardown. Use `npm run test:e2e:sim` for the simulator journey with the local map and no model calls.
+
 ## Private chat endpoint
 
 `POST /api/agent/session` accepts JSON actions `status`, `login` with a `password`, and `logout`. `status` is the browser bootstrap request. After login, it returns `{ authenticated: true, epoch, serverNow, retryWindowMs }`; without a valid session, it returns `{ authenticated: false }`. Import `agentSessionRequestSchema`, `agentSessionResponseSchema` and `formatAgentRequestId` from `@drone/mission-planner/agent-contract` for browser integration. Every session request uses `POST` with JSON and an exact `Origin` header. The browser chat route is `POST /api/agent`. Both routes require the configured origin; chat also requires a valid session cookie.

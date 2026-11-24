@@ -29,7 +29,7 @@ delete env[keyName];
 delete env.NEXT_PUBLIC_MAPTILER_API_KEY;
 if (mode === 'provider') env[keyName] = key;
 if (mode === 'missing') env[keyName] = '';
-if (serverMode === 'dev') env.DRONE_NEXT_DIST_DIR = `.next-map-${mode}`;
+if (serverMode === 'dev') env.DRONE_NEXT_DIST_DIR = env.DRONE_NEXT_DEV_DIST_DIR ?? `.next-map-${mode}`;
 if (serverMode === 'start') env.DRONE_NEXT_DIST_DIR = '.next';
 if (serverMode === 'dev' && process.env.DRONE_PLANNER_BUILD !== 'ready') {
   const buildEnv = { ...env };
