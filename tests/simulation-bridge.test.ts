@@ -588,4 +588,89 @@ describe("simulation-bridge", () => {
 
     await session.end(validStart.status.runId!);
   });
+
+  it("tracks active leg, handles completed phase, and coordinates teardown", async () => {
+    const { child, stdoutStream } = createMockChildProcess();
+    let capturedArgs: string[] = [];
+    const session = new SimulationBridgeSession({
+      spawnRunner: (_cmd, args) => {
+        capturedArgs = args;
+        return child;
+      },
+      cleanupContainers: async () => true,
+    });
+
+    const fourWps = [
+      { id: "wp-1", latitudeDeg: 47.398043, longitudeDeg: 8.545594, altitudeM: 10 },
+      { id: "wp-2", latitudeDeg: 47.398343, longitudeDeg: 8.545594, altitudeM: 10 },
+      { id: "wp-3", latitudeDeg: 47.398343, longitudeDeg: 8.546094, altitudeM: 10 },
+      { id: "wp-4", latitudeDeg: 47.398043, longitudeDeg: 8.546094, altitudeM: 10 },
+    ];
+
+    const startRes = await session.start({
+      name: "4-waypoint survey",
+      plannedAltitudeM: 10,
+      waypoints: fourWps,
+    });
+    expect(startRes.ok).toBe(true);
+    expect(capturedArgs).toContain("--block-leg");
+    expect(capturedArgs).toContain("1");
+
+    // Emit leg message
+    stdoutStream.write(
+      JSON.stringify({
+        type: "leg",
+        stage: "leg",
+        leg_index: 1,
+        from_waypoint_index: 1,
+        to_waypoint_index: 2,
+        distance_m: 37.7,
+      }) + "\n"
+    );
+
+    const snap1 = session.getSnapshot();
+    expect(snap1.status.activeLeg).toMatchObject({
+      stage: "leg",
+      legIndex: 1,
+      fromWaypointIndex: 1,
+      toWaypointIndex: 2,
+      fromWaypointId: "wp-2",
+      toWaypointId: "wp-3",
+    });
+
+    // Emit blockage on leg 1
+    stdoutStream.write(
+      JSON.stringify({
+        type: "blockage",
+        blocked: true,
+        boundary_m: 20.0,
+        leg_index: 1,
+      }) + "\n"
+    );
+
+    const snap2 = session.getSnapshot();
+    expect(snap2.status.blocked).toBe(true);
+    expect(snap2.status.blockedLeg).toMatchObject({
+      stage: "leg",
+      legIndex: 1,
+      fromWaypointId: "wp-2",
+      toWaypointId: "wp-3",
+    });
+
+    // Emit completed phase
+    stdoutStream.write(
+      JSON.stringify({
+        type: "phase",
+        phase: "completed",
+      }) + "\n"
+    );
+
+    const snap3 = session.getSnapshot();
+    expect(snap3.status.phase).toBe("completed");
+
+    // End simulation while in completed phase
+    const endRes = await session.end(startRes.status.runId!);
+    expect(endRes.ok).toBe(true);
+    expect(session.getSnapshot().status.phase).toBe("ended");
+  });
 });

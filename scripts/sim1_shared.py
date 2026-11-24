@@ -180,6 +180,59 @@ def generate_synthetic_route(
     return items
 
 
+def build_route_legs(
+    home_lat: float, home_lon: float, waypoints: List[Dict[str, Any]]
+) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
+    """
+    Construct route legs metadata including takeoff and adjacent waypoint-to-waypoint legs.
+    """
+    first_wp = waypoints[0]
+    first_lat = float(first_wp.get("latitudeDeg") if "latitudeDeg" in first_wp else first_wp.get("latitude_deg", first_wp.get("lat", 0.0)))
+    first_lon = float(first_wp.get("longitudeDeg") if "longitudeDeg" in first_wp else first_wp.get("longitude_deg", first_wp.get("lon", 0.0)))
+    d_n, d_e, _, dist = calculate_displacement(home_lat, home_lon, 0.0, first_lat, first_lon, 0.0)
+    takeoff_leg = {
+        "stage": "takeoff",
+        "from_lat": home_lat,
+        "from_lon": home_lon,
+        "to_lat": first_lat,
+        "to_lon": first_lon,
+        "unit_north": d_n / dist if dist > 0 else 1.0,
+        "unit_east": d_e / dist if dist > 0 else 0.0,
+        "distance_m": dist,
+        "to_waypoint_index": 0,
+        "to_waypoint_id": first_wp.get("id"),
+    }
+
+    legs: List[Dict[str, Any]] = []
+    for i in range(len(waypoints) - 1):
+        wp_a = waypoints[i]
+        wp_b = waypoints[i + 1]
+        lat_a = float(wp_a.get("latitudeDeg") if "latitudeDeg" in wp_a else wp_a.get("latitude_deg", wp_a.get("lat", 0.0)))
+        lon_a = float(wp_a.get("longitudeDeg") if "longitudeDeg" in wp_a else wp_a.get("longitude_deg", wp_a.get("lon", 0.0)))
+        lat_b = float(wp_b.get("latitudeDeg") if "latitudeDeg" in wp_b else wp_b.get("latitude_deg", wp_b.get("lat", 0.0)))
+        lon_b = float(wp_b.get("longitudeDeg") if "longitudeDeg" in wp_b else wp_b.get("longitude_deg", wp_b.get("lon", 0.0)))
+
+        d_n, d_e, _, leg_dist = calculate_displacement(lat_a, lon_a, 0.0, lat_b, lon_b, 0.0)
+        u_n = d_n / leg_dist if leg_dist > 0 else 1.0
+        u_e = d_e / leg_dist if leg_dist > 0 else 0.0
+        legs.append({
+            "stage": "leg",
+            "leg_index": i,
+            "from_waypoint_index": i,
+            "to_waypoint_index": i + 1,
+            "from_waypoint_id": wp_a.get("id"),
+            "to_waypoint_id": wp_b.get("id"),
+            "from_lat": lat_a,
+            "from_lon": lon_a,
+            "to_lat": lat_b,
+            "to_lon": lon_b,
+            "unit_north": u_n,
+            "unit_east": u_e,
+            "distance_m": leg_dist,
+        })
+    return takeoff_leg, legs
+
+
 class MotionDetector:
     """
     Tracks and validates movement along route from live telemetry.
@@ -196,6 +249,8 @@ class MotionDetector:
         min_speed_m_s: float = 0.5,
         required_samples: int = 3,
         leg_unit: Tuple[float, float] = (1.0, 0.0),
+        takeoff_leg: Optional[Dict[str, Any]] = None,
+        legs: Optional[List[Dict[str, Any]]] = None,
     ):
         self.home_lat = home_lat
         self.home_lon = home_lon
@@ -204,12 +259,51 @@ class MotionDetector:
         self.min_speed_m_s = min_speed_m_s
         self.required_samples = required_samples
         self.unit_north, self.unit_east = leg_unit
+        self.takeoff_leg = takeoff_leg
+        self.legs = legs or []
+
+        self.current_origin_lat = home_lat
+        self.current_origin_lon = home_lon
+        self.active_leg_stage = "takeoff" if takeoff_leg else "leg"
+        self.active_leg_index = 0
+
+        if self.active_leg_stage == "takeoff" and takeoff_leg:
+            self.unit_north = takeoff_leg.get("unit_north", self.unit_north)
+            self.unit_east = takeoff_leg.get("unit_east", self.unit_east)
+        elif self.legs:
+            leg = self.legs[0]
+            self.current_origin_lat = leg["from_lat"]
+            self.current_origin_lon = leg["from_lon"]
+            self.unit_north = leg["unit_north"]
+            self.unit_east = leg["unit_east"]
 
         self.consecutive_moving_samples = 0
         self.max_speed_observed = 0.0
         self.max_displacement_observed = 0.0
         self.is_confirmed = False
         self.history: List[Dict[str, Any]] = []
+
+    def switch_leg(self, leg_index: int) -> None:
+        """Switch active tracking to a waypoint-to-waypoint leg."""
+        if self.legs and 0 <= leg_index < len(self.legs):
+            self.active_leg_stage = "leg"
+            self.active_leg_index = leg_index
+            leg = self.legs[leg_index]
+            self.current_origin_lat = leg["from_lat"]
+            self.current_origin_lon = leg["from_lon"]
+            self.unit_north = leg["unit_north"]
+            self.unit_east = leg["unit_east"]
+            self.consecutive_moving_samples = 0
+            self.max_speed_observed = 0.0
+            self.max_displacement_observed = 0.0
+            self.is_confirmed = False
+
+    def set_completed(self) -> None:
+        """Mark mission completed at final waypoint."""
+        self.active_leg_stage = "completed"
+        self.unit_north = 0.0
+        self.unit_east = 0.0
+        self.consecutive_moving_samples = 0
 
     def record_sample(
         self,
@@ -226,13 +320,18 @@ class MotionDetector:
         if iso_timestamp is None:
             iso_timestamp = datetime.datetime.now(datetime.timezone.utc).isoformat()
 
-        d_north, d_east, _, _ = calculate_displacement(
+        d_north_home, d_east_home, _, _ = calculate_displacement(
             self.home_lat, self.home_lon, self.home_alt,
             lat, lon, rel_alt
         )
 
-        # Horizontal progress along the initial leg direction (ignoring climb and perpendicular drift)
-        progress_m = d_north * self.unit_north + d_east * self.unit_east
+        d_north_leg, d_east_leg, _, _ = calculate_displacement(
+            self.current_origin_lat, self.current_origin_lon, self.home_alt,
+            lat, lon, rel_alt
+        )
+
+        # Horizontal progress along the active leg direction
+        progress_m = d_north_leg * self.unit_north + d_east_leg * self.unit_east
 
         if vel_north_m_s is not None and vel_east_m_s is not None:
             leg_speed_m_s = vel_north_m_s * self.unit_north + vel_east_m_s * self.unit_east
@@ -253,6 +352,26 @@ class MotionDetector:
         if self.consecutive_moving_samples >= self.required_samples:
             self.is_confirmed = True
 
+        active_leg: Dict[str, Any] = {"stage": self.active_leg_stage}
+        if self.active_leg_stage == "leg" and self.legs and self.active_leg_index < len(self.legs):
+            leg = self.legs[self.active_leg_index]
+            active_leg.update({
+                "leg_index": self.active_leg_index,
+                "from_waypoint_index": leg["from_waypoint_index"],
+                "to_waypoint_index": leg["to_waypoint_index"],
+                "from_waypoint_id": leg.get("from_waypoint_id"),
+                "to_waypoint_id": leg.get("to_waypoint_id"),
+                "leg_progress_m": progress_m,
+                "leg_total_distance_m": leg["distance_m"],
+            })
+        elif self.active_leg_stage == "takeoff":
+            active_leg.update({
+                "from_waypoint_index": 0,
+                "to_waypoint_index": 0,
+                "leg_progress_m": progress_m,
+                "leg_total_distance_m": self.takeoff_leg.get("distance_m", 0.0) if self.takeoff_leg else 0.0,
+            })
+
         sample_data = {
             "timestamp": iso_timestamp,
             "elapsed_s": elapsed_s,
@@ -262,9 +381,10 @@ class MotionDetector:
             "speed_m_s": speed_m_s,
             "leg_speed_m_s": leg_speed_m_s,
             "progress_m": progress_m,
-            "north_progress_m": d_north,
+            "north_progress_m": d_north_home,
             "is_moving": is_moving_sample,
             "confirmed": self.is_confirmed,
+            "active_leg": active_leg,
         }
         self.history.append(sample_data)
         return sample_data
@@ -433,7 +553,10 @@ async def sim1_startup(
 
         # 4. Generate and upload route
         leg_unit = (1.0, 0.0)
+        takeoff_leg = None
+        legs = None
         if custom_waypoints and len(custom_waypoints) >= 2:
+            takeoff_leg, legs = build_route_legs(initial_pos.latitude_deg, initial_pos.longitude_deg, custom_waypoints)
             first_wp = custom_waypoints[0]
             first_lat = float(first_wp.get("latitudeDeg") if "latitudeDeg" in first_wp else first_wp.get("latitude_deg", first_wp.get("lat", 0.0)))
             first_lon = float(first_wp.get("longitudeDeg") if "longitudeDeg" in first_wp else first_wp.get("longitude_deg", first_wp.get("lon", 0.0)))
@@ -546,6 +669,8 @@ async def sim1_startup(
             min_speed_m_s=0.5,
             required_samples=3,
             leg_unit=leg_unit,
+            takeoff_leg=takeoff_leg,
+            legs=legs,
         )
 
         return drone, initial_pos, items, detector

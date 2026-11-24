@@ -4,6 +4,7 @@ SIM-1 Interactive Runner:
 Supervised, interactive execution session designed for the local simulator bridge.
 Emits structured JSON-line events, ingests operator commands via stdin,
 enforces hold verification and explicit resume constraints, and guarantees bounded run lifetime.
+Supports multi-leg tracking, leg-targeted blockage, turn verification, and terminal mission completion.
 """
 
 from __future__ import annotations
@@ -16,7 +17,7 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 _script_dir = Path(__file__).resolve().parent
 _repo_root = _script_dir.parent
@@ -53,17 +54,21 @@ async def run_sim1_interactive(
     run_id: Optional[str] = None,
     max_runtime: float = 600.0,
     custom_waypoints: Optional[List[Dict[str, Any]]] = None,
+    block_leg: Optional[int] = None,
+    hold_trigger: float = 5.0,
+    block_boundary: float = 20.0,
 ) -> bool:
     """
     Run an interactive SIM-1 session over stdin/stdout JSON-lines.
     Lifecycle:
-      1. Preflight startup (shared with smoke test).
-      2. Telemetry emission stream.
-      3. Obstacle blockage injection and hold verification.
+      1. Preflight startup & route leg configuration.
+      2. Telemetry emission stream with active leg tracking.
+      3. Obstacle blockage injection on specified leg and hold verification.
       4. Clearance without automatic resume.
       5. Explicit operator resume from bridge.
-      6. Resumed route motion verification.
-      7. Verified teardown on operator end command or bounded timeout.
+      6. Resumed route motion verification on active leg.
+      7. Continued navigation through turns to final waypoint and mission completion.
+      8. Verified teardown on operator end command or bounded timeout.
     """
     emit_interactive("phase", {"phase": "starting"})
 
@@ -89,6 +94,7 @@ async def run_sim1_interactive(
     reader_thread.start()
 
     drone = None
+    progress_task = None
     try:
         drone, initial_pos, items, detector = await sim1_startup(
             address=address,
@@ -99,7 +105,48 @@ async def run_sim1_interactive(
             custom_waypoints=custom_waypoints,
         )
 
+        # Target leg for blockage: default to 1 (second leg, connecting WP 2 -> WP 3) if multi-leg, else 0
+        if block_leg is not None:
+            target_leg = block_leg
+        elif custom_waypoints and len(custom_waypoints) >= 4:
+            target_leg = 1
+        else:
+            target_leg = 0
+
+        # Validate sufficient distance on target leg for deceleration
+        if detector.legs:
+            if target_leg < 0 or target_leg >= len(detector.legs):
+                raise SimulatorError(
+                    f"Target leg index {target_leg} is out of bounds for route with {len(detector.legs)} legs."
+                )
+            leg_distance = detector.legs[target_leg]["distance_m"]
+            if leg_distance < block_boundary + 5.0:
+                raise SimulatorError(
+                    f"Target leg {target_leg + 1} distance ({leg_distance:.1f}m) is insufficient "
+                    f"for deceleration before blockage boundary {block_boundary:.1f}m."
+                )
+
         emit_interactive("phase", {"phase": "running"})
+
+        mission_current = 0
+        mission_total = len(items)
+
+        async def track_mission_progress() -> None:
+            nonlocal mission_current, mission_total
+            try:
+                stream_fn = getattr(getattr(drone, "mission", None), "mission_progress", None)
+                if callable(stream_fn):
+                    stream = stream_fn()
+                    if hasattr(stream, "__aiter__"):
+                        async for prog in stream:
+                            mission_current = prog.current
+                            mission_total = prog.total
+                    elif asyncio.iscoroutine(stream):
+                        stream.close()
+            except Exception:
+                pass
+
+        progress_task = asyncio.create_task(track_mission_progress())
 
         flight_start = time.monotonic()
         motion_confirmed = False
@@ -113,13 +160,13 @@ async def run_sim1_interactive(
         resumed = False
         resume_commanded = False
         resume_time = 0.0
-        resume_north = 0.0
         resume_progress = 0.0
         resumed_motion_confirmed = False
         blocked = False
         stopped_since = None
         pause_task = None
         last_telemetry_time = time.monotonic()
+        mission_completed = False
 
         while True:
             await asyncio.sleep(0.35)
@@ -158,7 +205,6 @@ async def run_sim1_interactive(
                     elif now - last_telemetry_time > 2.0:
                         emit_interactive("error", {"code": "STALE_TELEMETRY", "message": "Resume rejected: telemetry is stale"})
                     elif resume_commanded:
-                        # Prevent duplicate in-flight resume command
                         emit_interactive("error", {"code": "INVALID_REQUEST", "message": "Resume rejected: resume already in flight"})
                     else:
                         resume_commanded = True
@@ -167,7 +213,6 @@ async def run_sim1_interactive(
                         try:
                             await asyncio.wait_for(drone.mission.start_mission(), 5.0)
                             resumed = True
-                            resume_north = detector.history[-1]["north_progress_m"] if detector.history else held_north
                             resume_progress = detector.history[-1]["progress_m"] if detector.history else held_progress
                         except Exception as exc:
                             resume_commanded = False
@@ -185,6 +230,21 @@ async def run_sim1_interactive(
             elapsed = now - flight_start
             iso_now = datetime.datetime.now(datetime.timezone.utc).isoformat()
 
+            # Active leg tracking from mission progress
+            if detector.legs and not mission_completed:
+                if mission_current >= 1 and mission_current <= len(detector.legs):
+                    desired_leg = mission_current - 1
+                    if detector.active_leg_stage != "leg" or detector.active_leg_index != desired_leg:
+                        detector.switch_leg(desired_leg)
+                        emit_interactive("leg", {
+                            "stage": "leg",
+                            "leg_index": desired_leg,
+                            "from_waypoint_index": desired_leg,
+                            "to_waypoint_index": desired_leg + 1,
+                            "distance_m": detector.legs[desired_leg]["distance_m"],
+                        })
+                        emit_interactive("event", {"label": f"Advanced to leg {desired_leg + 1}"})
+
             sample = detector.record_sample(
                 lat=pos.latitude_deg,
                 lon=pos.longitude_deg,
@@ -196,7 +256,27 @@ async def run_sim1_interactive(
                 vel_east_m_s=vel.east_m_s,
             )
 
-            emit_interactive("telemetry", {
+            # Check mission completion
+            if not mission_completed and (resumed or not hold_requested):
+                is_finished = False
+                try:
+                    res = await asyncio.wait_for(drone.mission.is_mission_finished(), 0.05)
+                    if res is True:
+                        is_finished = True
+                except Exception:
+                    pass
+                if not is_finished and mission_total > 0 and mission_current >= mission_total:
+                    is_finished = True
+
+                if is_finished:
+                    mission_completed = True
+                    detector.set_completed()
+                    sample["active_leg"] = {"stage": "completed"}
+                    emit_interactive("leg", {"stage": "completed"})
+                    emit_interactive("event", {"label": "Mission completed: reached final waypoint"})
+                    emit_interactive("phase", {"phase": "completed"})
+
+            telemetry_payload = {
                 "timestamp": iso_now,
                 "lat": pos.latitude_deg,
                 "lon": pos.longitude_deg,
@@ -207,21 +287,30 @@ async def run_sim1_interactive(
                 "progress_m": sample["progress_m"],
                 "is_moving": sample["is_moving"],
                 "confirmed": sample["confirmed"],
-            })
+            }
+            if "active_leg" in sample:
+                telemetry_payload["active_leg"] = sample["active_leg"]
+
+            emit_interactive("telemetry", telemetry_payload)
 
             # 1. First motion confirmation
             if sample["confirmed"] and not motion_confirmed:
                 motion_confirmed = True
                 emit_interactive("event", {"label": "Route motion confirmed"})
 
-            # 2. Blockage injection & Hold request
-            if motion_confirmed and not hold_requested and sample["progress_m"] >= 5.0:
-                boundary = 20.0
+            # 2. Blockage injection & Hold request on target leg
+            is_on_target_leg = (
+                not detector.legs or
+                (detector.active_leg_stage == "leg" and detector.active_leg_index == target_leg)
+            )
+
+            if is_on_target_leg and motion_confirmed and not hold_requested and sample["progress_m"] >= hold_trigger:
+                boundary = block_boundary
                 if sample["progress_m"] >= boundary:
                     raise MotionTimeoutError("Simulator reached blocked segment before injection.")
                 hold_requested = True
                 blocked = True
-                emit_interactive("blockage", {"blocked": True, "boundary_m": boundary})
+                emit_interactive("blockage", {"blocked": True, "boundary_m": boundary, "leg_index": target_leg})
                 emit_interactive("event", {"label": "Next segment blocked"})
                 emit_interactive("hold_requested", {"hold_requested": True})
                 emit_interactive("event", {"label": "Autopilot commanded hold"})
@@ -234,7 +323,7 @@ async def run_sim1_interactive(
 
             # 3. Confirming hold
             if hold_requested and not hold_confirmed:
-                if sample["progress_m"] >= 20.0:
+                if sample["progress_m"] >= block_boundary:
                     raise MotionTimeoutError(f"Simulator entered blocked segment at {sample['progress_m']:.2f} m.")
                 if pause_task and pause_task.done():
                     await pause_task
@@ -258,13 +347,13 @@ async def run_sim1_interactive(
                 if now - hold_confirmed_time >= 2.0:
                     clearance_emitted = True
                     blocked = False
-                    emit_interactive("blockage", {"blocked": False})
+                    emit_interactive("blockage", {"blocked": False, "leg_index": target_leg})
                     emit_interactive("event", {"label": "Blockage cleared"})
                     emit_interactive("event", {"label": "Telemetry confirmed continued hold for two seconds after clearance"})
 
             # Check hold integrity (no drift without resume)
             if hold_confirmed and not resumed:
-                if sample["progress_m"] >= 20.0:
+                if sample["progress_m"] >= block_boundary:
                     raise MotionTimeoutError(f"Simulator entered blocked segment at {sample['progress_m']:.2f} m.")
 
                 # Settle into steady-state loiter position as braking flare overshoot levels out
@@ -293,4 +382,6 @@ async def run_sim1_interactive(
                 raise MotionTimeoutError(f"Motion along route could not be confirmed within timeout {motion_timeout}s.")
 
     finally:
+        if progress_task and not progress_task.done():
+            progress_task.cancel()
         await cleanup_drone(drone)

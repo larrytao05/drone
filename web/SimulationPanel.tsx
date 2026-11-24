@@ -11,6 +11,7 @@ import {
   altitudeDisplay,
   canEnd,
   canResume,
+  formatLegDisplay,
   speedDisplay,
   statusLabel,
   statusNote,
@@ -110,6 +111,18 @@ export function SimulationPanel({
         <dd>{speedDisplay(simulation)}</dd>
         <dt>Altitude</dt>
         <dd>{altitudeDisplay(simulation)}</dd>
+        {simulation.activeLeg && (
+          <>
+            <dt>Active leg</dt>
+            <dd>{formatLegDisplay(simulation.activeLeg)}</dd>
+          </>
+        )}
+        {simulation.blockedLeg && (simulation.blocked || simulation.phase === 'holding') && (
+          <>
+            <dt>Blocked leg</dt>
+            <dd>{formatLegDisplay(simulation.blockedLeg)}</dd>
+          </>
+        )}
         <dt>Last telemetry</dt>
         <dd>{telemetryTimeDisplay(simulation.tick, simulation.telemetry?.timestamp)}</dd>
       </dl>

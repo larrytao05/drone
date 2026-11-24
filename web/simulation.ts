@@ -5,13 +5,14 @@
  * No Python, live simulator, bridge, or external dependencies.
  */
 
+import type { SimulationLegProgress } from '../src/simulation-contract';
 import type { MapGeometry } from './map-geometry';
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
-export type SimPhase = 'ready' | 'starting' | 'running' | 'holding' | 'ending' | 'ended' | 'failed';
+export type SimPhase = 'ready' | 'starting' | 'running' | 'holding' | 'completed' | 'ending' | 'ended' | 'failed';
 
 export type SimEvent = Readonly<{
   tick: number;
@@ -48,6 +49,8 @@ export type SimulationState = Readonly<{
   ownershipChecking?: boolean;
   holdRequested?: boolean;
   holdConfirmed?: boolean;
+  activeLeg?: SimulationLegProgress | null;
+  blockedLeg?: SimulationLegProgress | null;
   telemetry?: {
     lat: number;
     lon: number;
@@ -83,7 +86,13 @@ export function isSimulationEditLocked(state: SimulationState): boolean {
   if (state.ownershipChecking) {
     return true;
   }
-  if (state.phase === 'starting' || state.phase === 'running' || state.phase === 'holding' || state.phase === 'ending') {
+  if (
+    state.phase === 'starting' ||
+    state.phase === 'running' ||
+    state.phase === 'holding' ||
+    state.phase === 'completed' ||
+    state.phase === 'ending'
+  ) {
     return true;
   }
   if (state.phase === 'failed' || state.phase === 'ended') {
@@ -99,6 +108,9 @@ export function simulationBannerText(state: SimulationState): string {
   if (state.cleanupCompleted === false && (state.phase === 'failed' || state.phase === 'ended')) {
     return 'Simulation cleanup incomplete · Route editing paused.';
   }
+  if (state.phase === 'completed') {
+    return 'Simulation running · Route editing paused.';
+  }
   if (state.phase === 'ending') {
     return 'Simulation ending · Route editing paused.';
   }
@@ -106,7 +118,7 @@ export function simulationBannerText(state: SimulationState): string {
 }
 
 export function isActive(state: SimulationState): boolean {
-  return state.phase === 'running' || state.phase === 'holding';
+  return state.phase === 'running' || state.phase === 'holding' || state.phase === 'completed';
 }
 
 // ---------------------------------------------------------------------------
@@ -227,6 +239,7 @@ export function simulationReducer(state: SimulationState, action: SimulationActi
 export function statusLabel(state: SimulationState): string {
   if (state.phase === 'ready') return 'Ready to simulate';
   if (state.phase === 'starting') return 'Starting simulation';
+  if (state.phase === 'completed') return 'Mission completed';
   if (state.phase === 'ending') return 'Ending simulation';
   if (state.phase === 'failed') return 'Simulation failed';
   if (state.phase === 'ended') return 'Simulation ended';
@@ -238,6 +251,7 @@ export function statusLabel(state: SimulationState): string {
 export function statusNote(state: SimulationState): string {
   if (state.phase === 'ready') return 'Ready to simulate.';
   if (state.phase === 'starting') return 'Initializing simulator and preflight health.';
+  if (state.phase === 'completed') return 'Reached final waypoint. Ready for teardown.';
   if (state.phase === 'ending') return 'Tearing down simulator resources.';
   if (state.phase === 'failed') {
     return state.error?.message ?? 'Simulation encountered a failure.';
@@ -251,6 +265,16 @@ export function statusNote(state: SimulationState): string {
     return 'Segment clear. Waiting for you to resume.';
   }
   return 'Following the planned route.';
+}
+
+export function formatLegDisplay(leg?: SimulationLegProgress | null): string {
+  if (!leg) return '—';
+  if (leg.stage === 'takeoff') return 'Transit to WP 1';
+  if (leg.stage === 'completed') return 'Final waypoint reached';
+  const legNum = (leg.legIndex ?? 0) + 1;
+  const fromWp = (leg.fromWaypointIndex ?? 0) + 1;
+  const toWp = (leg.toWaypointIndex ?? 0) + 1;
+  return `Leg ${legNum} (WP ${fromWp} → WP ${toWp})`;
 }
 
 export function speedDisplay(state: SimulationState): string {

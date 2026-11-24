@@ -113,12 +113,18 @@ export function blockedLineData(start: Coordinate, end: Coordinate): LineFeature
   };
 }
 
-function createDroneElement(fresh: boolean, tick: number, coord: Coordinate, timestamp?: string | null): HTMLDivElement {
+function createDroneElement(
+  fresh: boolean,
+  tick: number,
+  coord: Coordinate,
+  timestamp?: string | null,
+  activeLegText?: string | null,
+): HTMLDivElement {
   const el = document.createElement('div');
   if (styles.simDroneMarker) el.classList.add(styles.simDroneMarker);
   if (!fresh && styles.simDroneMarkerStale) el.classList.add(styles.simDroneMarkerStale);
   el.setAttribute('role', 'img');
-  el.setAttribute('aria-label', fresh ? 'Simulated drone position' : 'Last known position');
+  el.setAttribute('aria-label', fresh ? 'Simulated drone position' : (activeLegText ? `Last known position (${activeLegText})` : 'Last known position'));
   el.setAttribute('data-longitude', String(coord.longitudeDeg));
   el.setAttribute('data-latitude', String(coord.latitudeDeg));
   const dot = document.createElement('span');
@@ -130,11 +136,18 @@ function createDroneElement(fresh: boolean, tick: number, coord: Coordinate, tim
   return el;
 }
 
-function updateDroneElement(el: HTMLDivElement, fresh: boolean, tick: number, coord: Coordinate, timestamp?: string | null) {
+function updateDroneElement(
+  el: HTMLDivElement,
+  fresh: boolean,
+  tick: number,
+  coord: Coordinate,
+  timestamp?: string | null,
+  activeLegText?: string | null,
+) {
   if (styles.simDroneMarkerStale) {
     el.classList.toggle(styles.simDroneMarkerStale, !fresh);
   }
-  el.setAttribute('aria-label', fresh ? 'Simulated drone position' : 'Last known position');
+  el.setAttribute('aria-label', fresh ? 'Simulated drone position' : (activeLegText ? `Last known position (${activeLegText})` : 'Last known position'));
   el.setAttribute('data-longitude', String(coord.longitudeDeg));
   el.setAttribute('data-latitude', String(coord.latitudeDeg));
   const labelSelector = styles.simDroneLabel ? `.${styles.simDroneLabel}` : 'span:last-child';
@@ -228,17 +241,37 @@ export function createMapSimulation(resources: SimulationResources, initialView:
     const displayTick = sim.fresh ? sim.tick : lastReportedTick;
     const displayTimestamp = sim.fresh ? (sim.telemetry?.timestamp ?? null) : lastReportedTimestamp;
 
+    let activeLegText: string | null = null;
+    if (sim.activeLeg) {
+      if (sim.activeLeg.stage === 'leg') {
+        activeLegText = `Leg ${(sim.activeLeg.legIndex ?? 0) + 1}`;
+      } else if (sim.activeLeg.stage === 'takeoff') {
+        activeLegText = 'Takeoff';
+      } else if (sim.activeLeg.stage === 'completed') {
+        activeLegText = 'Completed';
+      }
+    }
+
     if (droneMarker === null) {
-      droneElement = createDroneElement(sim.fresh, displayTick, currentCoord, displayTimestamp);
+      droneElement = createDroneElement(sim.fresh, displayTick, currentCoord, displayTimestamp, activeLegText);
       droneMarker = resources.createDroneMarker(droneElement, [currentCoord.longitudeDeg, currentCoord.latitudeDeg]);
     } else if (droneElement !== null) {
-      updateDroneElement(droneElement, sim.fresh, displayTick, currentCoord, displayTimestamp);
+      updateDroneElement(droneElement, sim.fresh, displayTick, currentCoord, displayTimestamp, activeLegText);
       droneMarker.setLngLat([currentCoord.longitudeDeg, currentCoord.latitudeDeg]);
     }
 
     // Blocked segment
     if (sim.blocked) {
-      const { startIndex, endIndex } = getBlockedSegmentIndices(routeCoords.length);
+      let startIndex: number;
+      let endIndex: number;
+      if (sim.blockedLeg?.fromWaypointIndex !== undefined && sim.blockedLeg?.toWaypointIndex !== undefined) {
+        startIndex = sim.blockedLeg.fromWaypointIndex;
+        endIndex = sim.blockedLeg.toWaypointIndex;
+      } else {
+        const indices = getBlockedSegmentIndices(routeCoords.length);
+        startIndex = indices.startIndex;
+        endIndex = indices.endIndex;
+      }
       const wpStart = routeCoords[startIndex] ?? DEFAULT_FIXTURE_COORDS[0]!;
       const wpEnd = routeCoords[endIndex] ?? DEFAULT_FIXTURE_COORDS[1]!;
       const labelText = `Blocked segment · WP ${startIndex + 1} to WP ${endIndex + 1}`;

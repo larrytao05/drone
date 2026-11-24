@@ -336,6 +336,12 @@ def run_isolated_docker(args: Any) -> int:
                 cmd.extend(["--max-runtime", str(args.max_runtime)])
             if getattr(args, "route_json", None):
                 cmd.extend(["--route-json", args.route_json])
+            if getattr(args, "block_leg", None) is not None:
+                cmd.extend(["--block-leg", str(args.block_leg)])
+            if getattr(args, "hold_trigger", None) is not None:
+                cmd.extend(["--hold-trigger", str(args.hold_trigger)])
+            if getattr(args, "block_boundary", None) is not None:
+                cmd.extend(["--block-boundary", str(args.block_boundary)])
             proc = subprocess.Popen(cmd, stdin=sys.stdin, stdout=sys.stdout, stderr=sys.stderr)
             status = proc.wait()
         else:
@@ -434,8 +440,26 @@ def parse_args(args: Optional[List[str]] = None) -> argparse.Namespace:
         default=None,
         help="Optional JSON string of route waypoints to execute.",
     )
+    parser.add_argument(
+        "--block-leg",
+        type=int,
+        default=None,
+        help="Optional leg index to inject blockage on.",
+    )
+    parser.add_argument(
+        "--hold-trigger",
+        type=float,
+        default=5.0,
+        help="Distance along leg to trigger hold (default: 5.0m).",
+    )
+    parser.add_argument(
+        "--block-boundary",
+        type=float,
+        default=20.0,
+        help="Blocked boundary distance along leg (default: 20.0m).",
+    )
     parsed = parser.parse_args(args)
-    for name in ("startup_timeout", "motion_timeout", "max_runtime", "alt", "speed"):
+    for name in ("startup_timeout", "motion_timeout", "max_runtime", "alt", "speed", "hold_trigger", "block_boundary"):
         value = getattr(parsed, name)
         if not math.isfinite(value) or value <= 0:
             parser.error(f"--{name.replace('_', '-')} must be finite and positive")
@@ -481,6 +505,9 @@ def main() -> int:
                     run_id=args.run_id,
                     max_runtime=args.max_runtime,
                     custom_waypoints=custom_waypoints,
+                    block_leg=args.block_leg,
+                    hold_trigger=args.hold_trigger,
+                    block_boundary=args.block_boundary,
                 )
             )
             return 0 if success else 1

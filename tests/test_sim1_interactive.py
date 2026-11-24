@@ -18,6 +18,7 @@ from scripts.sim1_shared import (
     SafetyViolationError,
     SimulatorError,
     StartupTimeoutError,
+    build_route_legs,
     cleanup_drone,
     emit_interactive,
     sim1_startup,
@@ -642,6 +643,233 @@ class TestInteractiveRunnerBehavior(unittest.IsolatedAsyncioTestCase):
                         max_runtime=10.0,
                     )
                 self.assertIn("Simulator drifted excessively after hold", str(ctx.exception))
+
+    async def test_target_leg_insufficient_distance_raises_error(self) -> None:
+        """Verify error raised when selected target leg has insufficient room for hold & boundary."""
+        short_wps = [
+            {"latitudeDeg": 47.398043, "longitudeDeg": 8.545594, "altitudeM": 10.0},
+            {"latitudeDeg": 47.398343, "longitudeDeg": 8.545594, "altitudeM": 10.0},
+            {"latitudeDeg": 47.398343, "longitudeDeg": 8.545700, "altitudeM": 10.0}, # ~8m leg
+            {"latitudeDeg": 47.398043, "longitudeDeg": 8.545700, "altitudeM": 10.0},
+        ]
+        mock_drone = AsyncMock()
+        mock_drone.connect = AsyncMock()
+        mock_drone.action = AsyncMock()
+        mock_drone.mission = AsyncMock()
+
+        async def conn_stream():
+            yield SimpleNamespace(is_connected=True)
+
+        async def health_stream():
+            yield SimpleNamespace(is_armable=True, is_global_position_ok=True, is_home_position_ok=True)
+
+        async def pos_stream():
+            yield SimpleNamespace(latitude_deg=47.397743, longitude_deg=8.545594, relative_altitude_m=10.0)
+
+        mock_drone.core = SimpleNamespace(connection_state=conn_stream)
+        mock_drone.telemetry = SimpleNamespace(
+            health=health_stream,
+            position=pos_stream,
+        )
+
+        with patch("scripts.sim1_shared.System", return_value=mock_drone):
+            with self.assertRaises(SimulatorError) as ctx:
+                await run_sim1_interactive(
+                    "udpin://127.0.0.1:14540",
+                    startup_timeout=1.0,
+                    custom_waypoints=short_wps,
+                    block_leg=1, # Target leg 2 (distance ~8m < 25m)
+                    block_boundary=20.0,
+                )
+            self.assertIn("insufficient", str(ctx.exception).lower())
+
+    async def test_multi_leg_turn_hold_resume_and_completion_lifecycle(self) -> None:
+        """
+        Verify complete multi-leg journey in runner:
+        Leg 1 (North) -> 90° turn -> Leg 2 (East) with hold, clear, explicit resume -> Leg 3 (South) -> completed.
+        """
+        import queue
+
+        class DynamicStdin:
+            def __init__(self):
+                self._q = queue.Queue()
+
+            def put(self, text: str):
+                self._q.put(text)
+
+            def close(self):
+                self._q.put(None)
+
+            def readline(self):
+                item = self._q.get()
+                return "" if item is None else item
+
+            def __iter__(self):
+                while True:
+                    line = self.readline()
+                    if not line:
+                        break
+                    yield line
+
+        dynamic_stdin = DynamicStdin()
+
+        four_wps = [
+            {"id": "wp-1", "latitudeDeg": 47.398043, "longitudeDeg": 8.545594, "altitudeM": 10.0},
+            {"id": "wp-2", "latitudeDeg": 47.398343, "longitudeDeg": 8.545594, "altitudeM": 10.0},
+            {"id": "wp-3", "latitudeDeg": 47.398343, "longitudeDeg": 8.546094, "altitudeM": 10.0},
+            {"id": "wp-4", "latitudeDeg": 47.398043, "longitudeDeg": 8.546094, "altitudeM": 10.0},
+        ]
+
+        mock_drone = AsyncMock()
+        mock_drone.connect = AsyncMock()
+        mock_drone.action = AsyncMock()
+        mock_drone.mission = AsyncMock()
+        mock_drone.mission.pause_mission = AsyncMock()
+        mock_drone.mission.start_mission = AsyncMock()
+
+        async def conn_stream():
+            yield SimpleNamespace(is_connected=True)
+
+        async def health_stream():
+            yield SimpleNamespace(is_armable=True, is_global_position_ok=True, is_home_position_ok=True)
+
+        step_idx = 0
+
+        # Mission progress stream:
+        # progresses from item 0 -> item 1 (Leg 1) -> item 2 (Leg 2) -> item 3 (Leg 3) -> item 4 (completed)
+        async def prog_stream():
+            yield SimpleNamespace(current=0, total=4)
+            while step_idx < 5:
+                await asyncio.sleep(0.05)
+            yield SimpleNamespace(current=1, total=4) # WP1 -> WP2 (Leg 0)
+            while step_idx < 7:
+                await asyncio.sleep(0.05)
+            yield SimpleNamespace(current=2, total=4) # WP2 -> WP3 (Leg 1)
+            while step_idx < 22:
+                await asyncio.sleep(0.05)
+            yield SimpleNamespace(current=3, total=4) # WP3 -> WP4 (Leg 2)
+            while step_idx < 25:
+                await asyncio.sleep(0.05)
+            yield SimpleNamespace(current=4, total=4) # Finished
+
+        mock_drone.core = SimpleNamespace(connection_state=conn_stream)
+        mock_drone.mission.mission_progress = prog_stream
+
+        async def mock_is_finished():
+            return step_idx >= 25
+
+        mock_drone.mission.is_mission_finished = mock_is_finished
+
+        # Telemetry position and velocity profile
+        lat_base = 47.397743
+        lon_base = 8.545594
+
+        telemetry_steps = [
+            # Takeoff from Home:
+            (47.397743, 8.545594, 0.0, 0.0),
+            (47.397788, 8.545594, 2.0, 0.0), # sample 1 moving
+            (47.397833, 8.545594, 3.0, 0.0), # sample 2 moving
+            (47.397878, 8.545594, 3.5, 0.0), # sample 3 moving -> confirmed!
+            (47.398043, 8.545594, 3.5, 0.0), # WP 1
+            # Leg 1 (Northward from WP 1 to WP 2):
+            (47.398143, 8.545594, 3.5, 0.0),
+            (47.398343, 8.545594, 2.0, 0.0), # WP 2
+            # Leg 2 (Eastward from WP 2 to WP 3) - Turn 90°!
+            (47.398343, 8.545644, 0.0, 2.0),
+            (47.398343, 8.545720, 0.0, 3.0), # Triggers hold!
+            (47.398343, 8.545750, 0.0, 0.2), # Decel
+            (47.398343, 8.545750, 0.0, 0.1), # Stopped 1
+            (47.398343, 8.545750, 0.0, 0.05),# Stopped 2
+            (47.398343, 8.545750, 0.0, 0.0), # Stopped 3 -> Hold confirmed! (t=0)
+            (47.398343, 8.545750, 0.0, 0.0), # t=0.35s
+            (47.398343, 8.545750, 0.0, 0.0), # t=0.70s
+            (47.398343, 8.545750, 0.0, 0.0), # t=1.05s
+            (47.398343, 8.545750, 0.0, 0.0), # t=1.40s
+            (47.398343, 8.545750, 0.0, 0.0), # t=1.75s
+            (47.398343, 8.545750, 0.0, 0.0), # t=2.10s -> Blockage cleared!
+            (47.398343, 8.545750, 0.0, 0.0), # Continued hold after clearance
+            (47.398343, 8.545750, 0.0, 0.0), # Continued hold after clearance
+            # Explicit resume commanded here!
+            (47.398343, 8.545800, 0.0, 2.5),
+            (47.398343, 8.545850, 0.0, 3.5), # Resumed motion confirmed!
+            (47.398343, 8.546094, 0.0, 2.0), # WP 3
+            # Leg 3 (Southward from WP 3 to WP 4) - Turn 90°!
+            (47.398200, 8.546094, -3.0, 0.0),
+            (47.398043, 8.546094, 0.0, 0.0), # WP 4 Completed!
+        ]
+
+        def make_pos_stream():
+            async def pos_stream():
+                curr = min(step_idx, len(telemetry_steps) - 1)
+                lat, lon, _, _ = telemetry_steps[curr]
+                yield SimpleNamespace(latitude_deg=lat, longitude_deg=lon, relative_altitude_m=10.0)
+            return pos_stream()
+
+        resume_sent = False
+        end_sent = False
+
+        def make_vel_stream():
+            async def vel_stream():
+                nonlocal step_idx, resume_sent, end_sent
+                curr = min(step_idx, len(telemetry_steps) - 1)
+                _, _, vn, ve = telemetry_steps[curr]
+                step_idx += 1
+
+                if step_idx >= 21 and not resume_sent:
+                    resume_sent = True
+                    dynamic_stdin.put(json.dumps({"command": "resume"}) + "\n")
+                if step_idx >= 25 and not end_sent:
+                    end_sent = True
+                    dynamic_stdin.put(json.dumps({"command": "end"}) + "\n")
+
+                yield SimpleNamespace(north_m_s=vn, east_m_s=ve, down_m_s=0.0)
+            return vel_stream()
+
+        mock_drone.telemetry = SimpleNamespace(
+            health=health_stream,
+            position=make_pos_stream,
+            velocity_ned=make_vel_stream,
+        )
+
+        try:
+            with patch("sys.stdin", dynamic_stdin):
+                with patch("scripts.sim1_shared.System", return_value=mock_drone):
+                    result = await run_sim1_interactive(
+                        "udpin://127.0.0.1:14540",
+                        startup_timeout=1.0,
+                        motion_timeout=10.0,
+                        max_runtime=15.0,
+                        custom_waypoints=four_wps,
+                        block_leg=1, # Leg 2 (WP 2 -> WP 3)
+                        hold_trigger=5.0,
+                        block_boundary=20.0,
+                    )
+                    self.assertTrue(result)
+        finally:
+            dynamic_stdin.close()
+
+        messages = self.get_emitted_messages()
+        phases = [m.get("phase") for m in messages if m.get("type") == "phase"]
+        self.assertIn("starting", phases)
+        self.assertIn("running", phases)
+        self.assertIn("holding", phases)
+        self.assertIn("completed", phases)
+        self.assertIn("ended", phases)
+
+        events = [m.get("label") for m in messages if m.get("type") == "event"]
+        self.assertIn("Route motion confirmed", events)
+        self.assertIn("Autopilot commanded hold", events)
+        self.assertIn("Telemetry confirmed hold", events)
+        self.assertIn("Blockage cleared", events)
+        self.assertIn("Explicit resume commanded", events)
+        self.assertIn("Route motion resumed", events)
+        self.assertIn("Mission completed: reached final waypoint", events)
+        self.assertIn("Simulation teardown requested", events)
+
+        # Check leg emissions
+        leg_msgs = [m for m in messages if m.get("type") == "leg"]
+        self.assertTrue(any(l.get("stage") == "leg" and l.get("leg_index") == 1 for l in leg_msgs))
+        self.assertTrue(any(l.get("stage") == "completed" for l in leg_msgs))
 
 
 if __name__ == "__main__":

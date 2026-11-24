@@ -172,6 +172,70 @@ describe("simulation-contract", () => {
       expect(parseResult.success).toBe(true);
     });
 
+    it("validates a multi-leg status object with activeLeg, blockedLeg, and completed phase", () => {
+      const status: SimulationStatus = {
+        runId: "sim_test_multi_leg",
+        seq: 12,
+        phase: "completed",
+        blocked: false,
+        holdRequested: true,
+        holdConfirmed: true,
+        fresh: true,
+        cleanupCompleted: false,
+        activeLeg: {
+          stage: "completed",
+        },
+        blockedLeg: {
+          stage: "leg",
+          legIndex: 1,
+          fromWaypointIndex: 1,
+          toWaypointIndex: 2,
+          fromWaypointId: "wp-2",
+          toWaypointId: "wp-3",
+        },
+        route: {
+          name: "Multi-leg survey",
+          plannedAltitudeM: 10,
+          waypoints: [
+            { id: "wp-1", latitudeDeg: 47.398043, longitudeDeg: 8.545594, altitudeM: 10 },
+            { id: "wp-2", latitudeDeg: 47.398343, longitudeDeg: 8.545594, altitudeM: 10 },
+            { id: "wp-3", latitudeDeg: 47.398343, longitudeDeg: 8.546094, altitudeM: 10 },
+            { id: "wp-4", latitudeDeg: 47.398043, longitudeDeg: 8.546094, altitudeM: 10 },
+          ],
+        },
+        telemetry: {
+          timestamp: "2026-11-23T00:00:15.000Z",
+          sampleAgeMs: 80,
+          position: {
+            lat: 47.398043,
+            lon: 8.546094,
+            altM: 10.0,
+            northProgressM: 33.4,
+          },
+          velocity: {
+            speedMs: 0.0,
+            northSpeedMs: 0.0,
+          },
+        },
+        events: [
+          { seq: 1, timestamp: "2026-11-23T00:00:00.000Z", label: "Simulation started" },
+          { seq: 2, timestamp: "2026-11-23T00:00:01.000Z", label: "Route motion confirmed" },
+          { seq: 3, timestamp: "2026-11-23T00:00:04.000Z", label: "Advanced to leg 2" },
+          { seq: 4, timestamp: "2026-11-23T00:00:05.000Z", label: "Next segment blocked" },
+          { seq: 5, timestamp: "2026-11-23T00:00:06.000Z", label: "Telemetry confirmed hold" },
+          { seq: 6, timestamp: "2026-11-23T00:00:08.000Z", label: "Blockage cleared" },
+          { seq: 7, timestamp: "2026-11-23T00:00:09.000Z", label: "Explicit resume commanded" },
+          { seq: 8, timestamp: "2026-11-23T00:00:10.000Z", label: "Route motion resumed" },
+          { seq: 9, timestamp: "2026-11-23T00:00:12.000Z", label: "Advanced to leg 3" },
+          { seq: 10, timestamp: "2026-11-23T00:00:15.000Z", label: "Mission completed: reached final waypoint" },
+        ],
+        error: null,
+      };
+
+      const parseResult = simulationStatusSchema.safeParse(status);
+      expect(parseResult.success).toBe(true);
+    });
+
     it("validates an error status object with cleanupCompleted", () => {
       const status: SimulationStatus = {
         runId: "sim_test_failed",
